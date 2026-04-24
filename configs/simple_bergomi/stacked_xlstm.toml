@@ -1,6 +1,6 @@
 [experiment_config]
-model_type = "nrde"
-dataset_name = "spd_wishart_diffusion"
+model_type = "stacked_xlstm"
+dataset_name = "simple_rbergomi"
 
 # Optimizer
 optimizer = "adamw"
@@ -11,9 +11,8 @@ max_grad_norm = 1.0
 # Training
 loss = "sigker"
 seed = 1
-batch_size = 16
-epochs = 16
-early_stopping_patience = 3
+batch_size = 128
+epochs = 100
 
 # Training mode
 training_mode = "unconditional"
@@ -28,16 +27,12 @@ rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
-[nrde_config]
-
-# M-NRDE model parameters
-cde_state_dim = 32
-init_hidden_dim = 32
-vf_hidden_dim = 32
-initial_cond_mlp_depth = 2
-vf_mlp_depth = 2
-out_size = 6
-
-# Log-signature configuration
-signature_depth = 2
-signature_window_size = 64
+[stacked_xlstm_config]
+d_model = 32
+num_heads = 4
+num_layers = 4
+d_conv = 4
+xlstm_expand = 2
+ffn_expand = 2
+use_ffn = true
+out_size = 1

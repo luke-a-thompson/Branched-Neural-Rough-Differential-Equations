@@ -1,40 +1,54 @@
+import math
+from collections.abc import Callable
+
+import diffrax
+import equinox as eqx
 import jax
 import optax
+from cyreal.loader import DataLoader
+from cyreal.transforms import BatchTransform
+from diffrax import ConstantStepSize, PIDController
+from stochastax.manifolds import SO3, EuclideanSpace, Manifold
+from stochastax.manifolds.spd import SPDManifold
+
 from taming_the_ito_lyon.config import (
-    Optimizer,
     Config,
-    NCDEConfig,
-    LogNCDEConfig,
-    NRDEConfig,
-    MNRDEConfig,
+    Datasets,
     GRUConfig,
+    LogNCDEConfig,
+    LSTMConfig,
+    MNRDEConfig,
+    MODEConfig,
+    NCDEConfig,
+    NRDEConfig,
+    Optimizer,
+    StackedXLSTMConfig,
+    XLSTMConfig,
 )
 from taming_the_ito_lyon.config.config_options import (
-    LossType,
-    StepsizeControllerType,
-    ManifoldType,
+    AdjointType,
     HopfAlgebraType,
+    LossType,
+    ManifoldType,
+    SolverType,
+    StepsizeControllerType,
 )
-from stochastax.manifolds import Manifold, EuclideanSpace, SO3
-from stochastax.manifolds.spd import SPDManifold
-from diffrax import ConstantStepSize, PIDController
 from taming_the_ito_lyon.models import (
-    NeuralCDE,
-    LogNCDE,
-    NeuralRDE,
-    MNDRE,
     GRU,
-    create_scheme,
+    LSTM,
+    MNDRE,
+    XLSTM,
+    LogNCDE,
+    ManifoldNeuralODE,
     Model,
+    NeuralCDE,
+    NeuralRDE,
+    StackedXLSTM,
+    create_scheme,
 )
 from taming_the_ito_lyon.models.extrapolation import (
     ExtrapolationScheme as ExtrapolationSchemeProtocol,
 )
-from taming_the_ito_lyon.config import Datasets
-import equinox as eqx
-from collections.abc import Callable
-from cyreal.transforms import BatchTransform, DevicePutTransform
-from cyreal.loader import DataLoader
 from taming_the_ito_lyon.training.results_gathering_fns import (
     ResultsGatheringFn,
 )
@@ -54,7 +68,16 @@ def _maybe_create_extrapolation_scheme(
     # Only these models currently accept extrapolation parameters.
     if not isinstance(
         config.nn_config,
-        (NCDEConfig, LogNCDEConfig, NRDEConfig, MNRDEConfig, GRUConfig),
+        (
+            NCDEConfig,
+            LogNCDEConfig,
+            NRDEConfig,
+            MNRDEConfig,
+            GRUConfig,
+            LSTMConfig,
+            XLSTMConfig,
+            StackedXLSTMConfig,
+        ),
     ):
         return key, None
 
@@ -92,6 +115,44 @@ def create_manifold_from_type(
             raise ValueError(f"Unknown manifold: {manifold_type}")
 
 
+def create_solver(config: Config) -> diffrax.AbstractSolver:
+    match config.solver_config.solver:
+        case SolverType.TSIT5:
+            return diffrax.Tsit5()
+        case SolverType.BOSH3:
+            return diffrax.Bosh3()
+        case SolverType.DOPRI5:
+            return diffrax.Dopri5()
+        case SolverType.DOPRI8:
+            return diffrax.Dopri8()
+        case SolverType.HEUN:
+            return diffrax.Heun()
+        case SolverType.EULER:
+            return diffrax.Euler()
+        case SolverType.EES25:
+            from ..models.ees25 import EES25
+
+            return EES25()
+        case SolverType.EES252N:
+            from diffrax_lowstorage import EES25
+
+            return EES25()
+        case _:
+            raise ValueError(f"Unknown solver: {config.solver_config.solver}")
+
+
+def create_adjoint(config: Config) -> diffrax.AbstractAdjoint:
+    match config.solver_config.adjoint:
+        case AdjointType.RECURSIVE_CHECKPOINT:
+            return diffrax.RecursiveCheckpointAdjoint()
+        case AdjointType.DIRECT:
+            return diffrax.DirectAdjoint()
+        case AdjointType.REVERSIBLE:
+            return diffrax.ReversibleAdjoint()
+        case _:
+            raise ValueError(f"Unknown adjoint: {config.solver_config.adjoint}")
+
+
 def create_stepsize_controller(
     config: Config,
 ) -> ConstantStepSize | PIDController:
@@ -110,6 +171,23 @@ def create_stepsize_controller(
             )
 
 
+def _infer_local_dim_for_m_ode(
+    manifold: type[Manifold],
+    input_path_dim: int,
+) -> int:
+    if manifold is SO3:
+        return 3
+    if manifold is SPDManifold:
+        disc = 1 + 4 * int(input_path_dim)
+        n = math.isqrt(disc)
+        if n * n != disc:
+            raise ValueError(
+                f"Cannot infer SPD local dimension from input_path_dim={input_path_dim}."
+            )
+        return (n - 1) // 2
+    return int(input_path_dim)
+
+
 def create_model(
     config: Config,
     *,
@@ -126,6 +204,8 @@ def create_model(
         config.experiment_config.hidden_manifold
     )
     stepsize_controller = create_stepsize_controller(config)
+    solver = create_solver(config)
+    adjoint = create_adjoint(config)
     match config.nn_config:
         case NCDEConfig():
             return NeuralCDE(
@@ -138,7 +218,10 @@ def create_model(
                 output_path_dim=output_path_dim,
                 key=model_key,
                 manifold=manifold,
+                solver=solver,
+                adjoint=adjoint,
                 stepsize_controller=stepsize_controller,
+                dt0=config.solver_config.dt0,
                 evolving_out=config.experiment_config.evolving_out,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
@@ -155,6 +238,8 @@ def create_model(
                 output_path_dim=output_path_dim,
                 signature_depth=config.nn_config.signature_depth,
                 signature_window_size=config.nn_config.signature_window_size,
+                solver=solver,
+                adjoint=adjoint,
                 stepsize_controller=stepsize_controller,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
@@ -171,6 +256,9 @@ def create_model(
                 output_path_dim=output_path_dim,
                 signature_depth=config.nn_config.signature_depth,
                 signature_window_size=config.nn_config.signature_window_size,
+                manifold=manifold,
+                solver=solver,
+                adjoint=adjoint,
                 stepsize_controller=stepsize_controller,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
@@ -191,11 +279,26 @@ def create_model(
                 data_manifold=manifold,
                 hidden_manifold=hidden_manifold,
                 hopf_algebra_type=config.nn_config.hopf_algebra,
+                solver=solver,
+                adjoint=adjoint,
                 stepsize_controller=stepsize_controller,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
                 brownian_channels=brownian_channels,
                 brownian_corr=0.0,
+                key=model_key,
+            )
+        case MODEConfig():
+            return ManifoldNeuralODE(
+                local_dim=_infer_local_dim_for_m_ode(manifold, input_path_dim),
+                anchor_dim=input_path_dim,
+                vf_hidden_dim=config.nn_config.vf_hidden_dim,
+                vf_mlp_depth=config.nn_config.vf_mlp_depth,
+                manifold=manifold,
+                output_scale=config.nn_config.output_scale,
+                solver=solver,
+                adjoint=adjoint,
+                stepsize_controller=stepsize_controller,
                 key=model_key,
             )
         case GRUConfig():
@@ -214,24 +317,54 @@ def create_model(
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
             )
-        # case SDEONetConfig():
-        #     return SDEONet(
-        #         basis_in_dim=config.nn_config.basis_in_dim,
-        #         basis_out_dim=config.nn_config.basis_out_dim,
-        #         T=config.nn_config.T,
-        #         hermite_M=config.nn_config.hermite_M,
-        #         wick_order=config.nn_config.wick_order,
-        #         use_posenc=config.nn_config.use_posenc,
-        #         pe_dim=config.nn_config.pe_dim,
-        #         include_raw_time=config.nn_config.include_raw_time,
-        #         branch_width=config.nn_config.branch_width,
-        #         branch_depth=config.nn_config.branch_depth,
-        #         trunk_width=config.nn_config.trunk_width,
-        #         trunk_depth=config.nn_config.trunk_depth,
-        #         use_layernorm=config.nn_config.use_layernorm,
-        #         residual=config.nn_config.residual,
-        #         key=key,
-        #     )
+        case LSTMConfig():
+            return LSTM(
+                input_path_dim=input_path_dim,
+                lstm_state_dim=config.nn_config.lstm_state_dim,
+                output_path_dim=output_path_dim,
+                mlp_hidden_dim=config.nn_config.init_hidden_dim,
+                initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
+                key=model_key,
+                manifold=manifold(),
+                hidden_manifold=hidden_manifold(),
+                num_layers=config.nn_config.num_layers,
+                evolving_out=config.experiment_config.evolving_out,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+            )
+        case XLSTMConfig():
+            return XLSTM(
+                input_path_dim=input_path_dim,
+                output_path_dim=output_path_dim,
+                d_model=config.nn_config.d_model,
+                n_heads=config.nn_config.num_heads,
+                d_conv=config.nn_config.d_conv,
+                xlstm_expand=config.nn_config.xlstm_expand,
+                ffn_expand=config.nn_config.ffn_expand,
+                use_ffn=config.nn_config.use_ffn,
+                key=model_key,
+                manifold=manifold(),
+                evolving_out=config.experiment_config.evolving_out,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+            )
+        case StackedXLSTMConfig():
+            return StackedXLSTM(
+                input_path_dim=input_path_dim,
+                output_path_dim=output_path_dim,
+                d_model=config.nn_config.d_model,
+                n_heads=config.nn_config.num_heads,
+                num_layers=config.nn_config.num_layers,
+                d_conv=config.nn_config.d_conv,
+                xlstm_expand=config.nn_config.xlstm_expand,
+                ffn_expand=config.nn_config.ffn_expand,
+                use_ffn=config.nn_config.use_ffn,
+                key=model_key,
+                manifold=manifold(),
+                evolving_out=config.experiment_config.evolving_out,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+            )
         case _:
             raise ValueError(f"Unknown model: {config.model_config}")
 
@@ -288,6 +421,14 @@ def create_dataloaders(
             train = dataset_cls(config=config, split="train").make_array_source()
             val = dataset_cls(config=config, split="val").make_array_source()
             test = dataset_cls(config=config, split="test").make_array_source()
+        case Datasets.SYNTHETIC_GBM:
+            from taming_the_ito_lyon.data.synthetic_gbm import SyntheticGBMDataset
+
+            train = SyntheticGBMDataset(
+                config=config, split="train"
+            ).make_array_source()
+            val = SyntheticGBMDataset(config=config, split="val").make_array_source()
+            test = SyntheticGBMDataset(config=config, split="test").make_array_source()
         case Datasets.SG_SO3_SIMULATION:
             from taming_the_ito_lyon.data.so3_dynamics_sim import SO3DynamicsSim
 
@@ -324,23 +465,57 @@ def create_dataloaders(
                 config=config,
                 split="test",
             ).make_disk_source()
-        case Datasets.SPD_COVARIANCE_SOLAR | Datasets.SPD_WISHART_DIFFUSION:
-            from taming_the_ito_lyon.data.spd_covariance import SPDCovarianceDataset
+        case Datasets.SPD_WISHART_DIFFUSION:
             from taming_the_ito_lyon.data.spd_wishart_diffusion import (
                 SPDWishartDiffusionDataset,
             )
 
-            spd_dataset_cls: (
-                type[SPDCovarianceDataset] | type[SPDWishartDiffusionDataset]
-            )
-            if config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION:
-                spd_dataset_cls = SPDWishartDiffusionDataset
-            else:
-                spd_dataset_cls = SPDCovarianceDataset
+            train = SPDWishartDiffusionDataset(
+                config=config, split="train"
+            ).make_disk_source()
+            val = SPDWishartDiffusionDataset(
+                config=config, split="val"
+            ).make_disk_source()
+            test = SPDWishartDiffusionDataset(
+                config=config, split="test"
+            ).make_disk_source()
+        case Datasets.PPG_DALIA:
+            from pathlib import Path
 
-            train = spd_dataset_cls(config=config, split="train").make_disk_source()
-            val = spd_dataset_cls(config=config, split="val").make_disk_source()
-            test = spd_dataset_cls(config=config, split="test").make_disk_source()
+            from cyreal.datasets import PPGDaliaDataset
+            from cyreal.transforms import MapTransform
+
+            def make_ppg_source(
+                split: str,
+                ordering: str,
+            ):
+                source = PPGDaliaDataset.make_disk_source(
+                    split=split,
+                    cache_dir=Path("data/"),
+                    ordering=ordering,
+                )
+                multirate_spec = getattr(source, "multirate_spec", None)
+
+                spec = dict(source.element_spec())
+                solution_spec = spec["solution"]
+                spec["solution"] = jax.ShapeDtypeStruct(
+                    shape=(*solution_spec.shape, 1),
+                    dtype=solution_spec.dtype,
+                )
+                source = MapTransform(
+                    fn=lambda batch, mask: {
+                        **batch,
+                        "solution": batch["solution"][..., None],
+                    },
+                    element_spec_override=spec,
+                )(source)
+                if multirate_spec is not None:
+                    source.multirate_spec = multirate_spec
+                return source
+
+            train = make_ppg_source("train", "shuffle")
+            val = make_ppg_source("val", "sequential")
+            test = make_ppg_source("test", "sequential")
         case _:
             raise ValueError(
                 f"Unknown dataset name: {config.experiment_config.dataset_name}"
@@ -353,7 +528,6 @@ def create_dataloaders(
             BatchTransform(
                 batch_size=config.experiment_config.batch_size, drop_last=True
             ),
-            DevicePutTransform(),
         ]
         dataloader = DataLoader(pipeline)
         dataloader.init_state(jax.random.key(config.experiment_config.seed))
@@ -451,12 +625,13 @@ def create_grad_batch_loss_fns(
     where `control_values_b` is a batch of control paths that will be fed to the model.
     """
     from taming_the_ito_lyon.training.losses import (
+        _maybe_unvech_spd,
+        branched_signature_kernel_score,
+        frobenius_loss,
+        initial_step_log_eigenvalue_loss,
         mse_loss,
         rotational_geodesic_loss,
-        truncated_sig_loss_time_augmented,
-        branched_sigker_loss,
-        frobenius_loss,
-        _maybe_unvech_spd,
+        signature_kernel_score,
     )
 
     loss_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None
@@ -486,7 +661,7 @@ def create_grad_batch_loss_fns(
             # matters (e.g. matching initial level "h0"/v0), then we must explicitly
             # encode it. We do that via a zero-basepoint prepend, which makes x0 an
             # increment and therefore visible to signature features.
-            loss_fn = truncated_sig_loss_time_augmented(
+            loss_fn = signature_kernel_score(
                 value_dim=int(output_path_dim),
                 anchor_at_start=False,
                 prepend_zero_basepoint=True,
@@ -512,7 +687,7 @@ def create_grad_batch_loss_fns(
                     Datasets.SIMPLE_RBERGOMI,
                 )
             )
-            base_branched_loss_fn = branched_sigker_loss(
+            base_branched_loss_fn = branched_signature_kernel_score(
                 depth=5,
                 use_planar=use_planar,
                 use_time=True,
@@ -528,6 +703,17 @@ def create_grad_batch_loss_fns(
         raise RuntimeError("No base loss configured.")
 
     use_spd = config.experiment_config.manifold == ManifoldType.SPD
+    use_spd_initial_step_loss = (
+        config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION
+    )
+    use_explicit_initial_step_loss = (
+        use_spd_initial_step_loss
+        and config.experiment_config.loss
+        in (
+            LossType.SIGKER,
+            LossType.SIGKER_BRANCHED,
+        )
+    )
     # Note: `SIGKER` can operate on SPD outputs by converting 3x3 matrix paths to a
     # Euclidean representation inside the loss (e.g. vech(X) for SPD). We therefore
     # allow SIGKER in SPD mode.
@@ -539,6 +725,17 @@ def create_grad_batch_loss_fns(
         gt_driver_b: jax.Array,
     ) -> jax.Array:
         preds = jax.vmap(model)(control_values_b)
+        if (
+            config.experiment_config.dataset_name == Datasets.PPG_DALIA
+            and preds.ndim >= 2
+            and target_b.ndim >= 2
+            and int(preds.shape[1]) != int(target_b.shape[1])
+        ):
+            preds = jax.image.resize(
+                preds,
+                shape=(int(preds.shape[0]), int(target_b.shape[1]), *preds.shape[2:]),
+                method="linear",
+            )
         if use_spd:
             preds = _maybe_unvech_spd(preds)
             target_b = _maybe_unvech_spd(target_b)
@@ -551,7 +748,9 @@ def create_grad_batch_loss_fns(
                     else control_values_b[..., 0]
                 )
                 w_gt = gt_driver_b[..., 0]
-                base = base_branched_loss_fn(preds, target_b, w_model, w_gt)
+                base = base_branched_loss_fn(
+                    preds, target_b, pred_aux=w_model, target_aux=w_gt
+                )
             else:
                 # For Wishart diffusion SPD datasets, `gt_driver_b` is a side-channel
                 # containing the bracket density for vech(X) (flattened 6x6 per time).
@@ -559,13 +758,17 @@ def create_grad_batch_loss_fns(
                     config.experiment_config.dataset_name
                     == Datasets.SPD_WISHART_DIFFUSION
                 ):
-                    base = base_branched_loss_fn(preds, target_b, None, gt_driver_b)
+                    base = base_branched_loss_fn(
+                        preds, target_b, target_cov=gt_driver_b
+                    )
                 else:
-                    base = base_branched_loss_fn(preds, target_b, None, None)
+                    base = base_branched_loss_fn(preds, target_b)
         else:
             assert loss_fn is not None
             base = loss_fn(preds, target_b)
 
+        if use_explicit_initial_step_loss:
+            base = base + initial_step_log_eigenvalue_loss(preds, target_b)
         return base
 
     def loss_on_preds_fn(
@@ -574,6 +777,17 @@ def create_grad_batch_loss_fns(
         control_values_b: jax.Array,
         gt_driver_b: jax.Array,
     ) -> jax.Array:
+        if (
+            config.experiment_config.dataset_name == Datasets.PPG_DALIA
+            and preds.ndim >= 2
+            and target_b.ndim >= 2
+            and int(preds.shape[1]) != int(target_b.shape[1])
+        ):
+            preds = jax.image.resize(
+                preds,
+                shape=(int(preds.shape[0]), int(target_b.shape[1]), *preds.shape[2:]),
+                method="linear",
+            )
         if use_spd:
             preds = _maybe_unvech_spd(preds)
             target_b = _maybe_unvech_spd(target_b)
@@ -586,18 +800,24 @@ def create_grad_batch_loss_fns(
                     else control_values_b[..., 0]
                 )
                 w_gt = gt_driver_b[..., 0]
-                base = base_branched_loss_fn(preds, target_b, w_model, w_gt)
+                base = base_branched_loss_fn(
+                    preds, target_b, pred_aux=w_model, target_aux=w_gt
+                )
             else:
                 if (
                     config.experiment_config.dataset_name
                     == Datasets.SPD_WISHART_DIFFUSION
                 ):
-                    base = base_branched_loss_fn(preds, target_b, None, gt_driver_b)
+                    base = base_branched_loss_fn(
+                        preds, target_b, target_cov=gt_driver_b
+                    )
                 else:
-                    base = base_branched_loss_fn(preds, target_b, None, None)
+                    base = base_branched_loss_fn(preds, target_b)
         else:
             assert loss_fn is not None
             base = loss_fn(preds, target_b)
+        if use_explicit_initial_step_loss:
+            base = base + initial_step_log_eigenvalue_loss(preds, target_b)
         return base
 
     return (
@@ -610,6 +830,7 @@ def create_grad_batch_loss_fns(
 def configure_jax() -> None:
     """Configure global JAX settings (matmul precision and persistent compilation cache)."""
     import os
+
     import lovely_jax
 
     lovely_jax.monkey_patch()
@@ -656,13 +877,53 @@ def create_results_gathering_fn(
             )
 
             return get_sg_so3_simulation_results
-        case Datasets.SPD_COVARIANCE_SOLAR | Datasets.SPD_WISHART_DIFFUSION:
+        case Datasets.SPD_WISHART_DIFFUSION:
             from taming_the_ito_lyon.training.results_gathering_fns import (
                 get_spd_covariance_results,
             )
 
             return get_spd_covariance_results
+        case Datasets.PPG_DALIA:
+            from taming_the_ito_lyon.training.results_gathering_fns import (
+                get_ppg_dalia_results,
+            )
+
+            return get_ppg_dalia_results
+        case Datasets.SYNTHETIC_GBM:
+            from taming_the_ito_lyon.training.results_gathering_fns import (
+                get_generic_path_results,
+            )
+
+            return get_generic_path_results
         case _:
             raise ValueError(
                 f"Unknown dataset name: {config.experiment_config.dataset_name}"
             )
+
+
+if __name__ == "__main__":
+    import argparse
+
+    from taming_the_ito_lyon.config import load_toml_config
+
+    parser = argparse.ArgumentParser(
+        description="Smoke-test dataloader creation from a config file."
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to TOML config",
+    )
+    args = parser.parse_args()
+
+    config = load_toml_config(args.config)
+    train_loader, val_loader, test_loader = create_dataloaders(config)
+    train_state = train_loader.init_state(jax.random.key(config.experiment_config.seed))
+    batch, _, _ = jax.jit(train_loader.next)(train_state)
+
+    print(f"Loaded dataset: {config.experiment_config.dataset_name.name}")
+    print(
+        f"Train/Val/Test steps: {train_loader.steps_per_epoch}/{val_loader.steps_per_epoch}/{test_loader.steps_per_epoch}"
+    )
+    print("Batch shapes:", {k: tuple(v.shape) for k, v in batch.items()})

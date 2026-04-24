@@ -1,0 +1,36 @@
+[experiment_config]
+model_type = "lstm"
+dataset_name = "spd_wishart_diffusion"
+
+# Optimizer
+optimizer = "adamw"
+learning_rate = 3e-4
+weight_decay = 0.000001
+max_grad_norm = 1.0
+
+# Training
+loss = "sigker"
+seed = 1
+batch_size = 32
+epochs = 16
+early_stopping_patience = 3
+
+# Training mode
+training_mode = "unconditional"
+
+manifold = "euclidean"
+hidden_manifold = "euclidean"
+evolving_out = true
+
+[solver_config]
+stepsize_controller = "pid"
+rtol = 1e-3
+atol = 1e-3
+dtmin = 1e-4
+
+[lstm_config]
+lstm_state_dim = 64
+num_layers = 2
+init_hidden_dim = 64
+initial_cond_mlp_depth = 2
+out_size = 6

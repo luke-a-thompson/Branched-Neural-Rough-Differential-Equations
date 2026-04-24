@@ -12,7 +12,6 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from stochastax.vector_field_lifts.lie_lift import form_lyndon_bracket_functions
-from stochastax.vector_field_lifts.split_vector_fields import split_multi_vector_field
 from stochastax.hopf_algebras import ShuffleHopfAlgebra
 from .extrapolation import ExtrapolationScheme
 from .logsignatures import (
@@ -59,13 +58,11 @@ class LogNCDEFunc(eqx.Module):
     def __call__(self, t: jax.typing.ArrayLike, y: jax.Array, args: None) -> jax.Array:
         del t, args
 
-        vector_fields = split_multi_vector_field(
-            self.base_mlp,
-            self.input_path_dim,
-            self.cde_state_dim,
-        )
+        def batched_field(z: jax.Array) -> jax.Array:
+            return self.base_mlp(z).reshape(self.input_path_dim, self.cde_state_dim)
+
         bracket_functions = form_lyndon_bracket_functions(
-            vector_fields, self.shuffle_hopf_algebra
+            batched_field, self.shuffle_hopf_algebra
         )
 
         flat_bracket_functions = [
@@ -94,6 +91,7 @@ class LogNCDE(eqx.Module):
     n_recon: int | None = eqx.field(static=True)
 
     solver: diffrax.AbstractAdaptiveSolver = eqx.field(static=True)
+    adjoint: diffrax.AbstractAdjoint = eqx.field(static=True)
     stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
     dt0: float | None = eqx.field(static=True)
 
@@ -112,6 +110,7 @@ class LogNCDE(eqx.Module):
         key: jax.Array,
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         solver: diffrax.AbstractAdaptiveSolver = diffrax.Bosh3(),
+        adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         stepsize_controller: diffrax.AbstractStepSizeController,
         dt0: float | None = None,
         evolving_out: bool = True,
@@ -151,6 +150,7 @@ class LogNCDE(eqx.Module):
         self.extrapolation_scheme = extrapolation_scheme
         self.n_recon = n_recon
         self.solver = solver
+        self.adjoint = adjoint
         self.stepsize_controller = stepsize_controller
         self.dt0 = dt0
 
@@ -166,6 +166,7 @@ class LogNCDE(eqx.Module):
             cde_func=self.cde_func,
             y0=h0,
             solver=self.solver,
+            adjoint=self.adjoint,
             stepsize_controller=self.stepsize_controller,
             dt0=self.dt0,
         )

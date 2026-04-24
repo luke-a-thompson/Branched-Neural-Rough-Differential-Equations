@@ -4,38 +4,73 @@ import signal
 import time
 from typing import TypeVar
 
-import numpy as np
-
 import equinox as eqx
 import jax
 import jax.random as jr
+import numpy as np
 import optax
 from tqdm.auto import tqdm
 
 from taming_the_ito_lyon.config import Config, load_toml_config
-from taming_the_ito_lyon.config.config_options import TrainingMode
+from taming_the_ito_lyon.config.config_options import Datasets, TrainingMode
 from taming_the_ito_lyon.models import Model
 from taming_the_ito_lyon.training.factories import (
+    configure_jax,
     create_model,
     create_optimizer,
-    configure_jax,
 )
 from taming_the_ito_lyon.training.io import (
-    format_loss,
     finalize_training_run,
+    format_loss,
     get_run_dirname,
     write_test_metrics,
 )
 from taming_the_ito_lyon.training.loops import run_eval_epoch, run_train_epoch
-from taming_the_ito_lyon.training.runtime import build_runtime
+from taming_the_ito_lyon.training.runtime import (
+    build_runtime,
+    trim_time_aligned_batch,
+)
 
 SAVED_MODELS_DIR = "saved_models"
 
 T = TypeVar("T")
 
+def _eval_metric_name(config: Config, loss_label: str) -> str:
+    dataset_name = config.experiment_config.dataset_name
+    if dataset_name in (
+        Datasets.BLACK_SCHOLES,
+        Datasets.BERGOMI,
+        Datasets.ROUGH_BERGOMI,
+        Datasets.SIMPLE_RBERGOMI,
+    ):
+        return "median_ks"
+    if dataset_name in (
+        Datasets.SG_SO3_SIMULATION,
+        Datasets.OXFORD_MULTIMOTION_STATIC,
+        Datasets.OXFORD_MULTIMOTION_TRANSLATIONAL,
+        Datasets.OXFORD_MULTIMOTION_UNCONSTRAINED,
+    ):
+        if loss_label == "rge":
+            return "rge"
+        return "frobenius"
+    if dataset_name == Datasets.SPD_WISHART_DIFFUSION:
+        return "median_eigenvalue_w1"
+    return loss_label
+
+
+def _compiled_xla_scratch_mib(fn: object, *args: object) -> float | None:
+    try:
+        compiled_wrapper = fn.lower(*args).compile()
+        compiled = getattr(compiled_wrapper, "compiled", compiled_wrapper)
+        return float(compiled.memory_analysis().temp_size_in_bytes) / (1024.0**2)
+    except Exception:
+        return None
+
 
 def experiment(
-    config: Config, config_path: str | None = None, return_metrics: bool = False
+    config: Config,
+    config_path: str | None = None,
+    return_metrics: bool = False,
 ) -> dict[str, float | str] | None:
     configure_jax()
     model_name = config.experiment_config.model_type.value
@@ -114,11 +149,15 @@ def experiment(
     min_val_metric = float("inf")
     min_train_loss = float("inf")
     best_epoch = -1
+    time_to_best_epoch: float | None = None
     epochs_since_improve = 0
     patience = int(config.experiment_config.early_stopping_patience)
 
     epochs = int(config.experiment_config.epochs)
     final_epoch = 0
+    train_loss_history: list[float] = []
+    val_loss_history: list[float] = []
+    val_metric_history: list[float] = []
 
     train_loader_state = runtime.train_loader_state
     val_loader_state = runtime.val_loader_state
@@ -136,21 +175,36 @@ def experiment(
     else:
         warmup_controls = warmup_batch["driver"]
 
+    warmup_controls, warmup_targets, warmup_driver = trim_time_aligned_batch(
+        runtime,
+        warmup_controls,
+        warmup_batch["solution"],
+        warmup_batch["driver"],
+    )
     warmup_preds = runtime.predict_batch(warmup_controls, model)
     warmup_eval = runtime.loss_on_preds_fn(
-        warmup_preds, warmup_batch["solution"], warmup_controls, warmup_batch["driver"]
+        warmup_preds, warmup_targets, warmup_controls, warmup_driver
     )
     jax.block_until_ready(warmup_eval)
 
     # Warm up the (JIT-compiled) training step as well.
     warmup_loss, _, _ = train_step(
         warmup_controls,
-        warmup_batch["solution"],
-        warmup_batch["driver"],
+        warmup_targets,
+        warmup_driver,
         model,
         opt_state,
     )
     jax.block_until_ready(warmup_loss)
+
+    xla_scratch_size_mib = _compiled_xla_scratch_mib(
+        train_step,
+        warmup_controls,
+        warmup_targets,
+        warmup_driver,
+        model,
+        opt_state,
+    )
 
     training_start = time.perf_counter()
 
@@ -172,6 +226,7 @@ def experiment(
             train_loader_state,
         )
         min_train_loss = min(min_train_loss, train_loss)
+        train_loss_history.append(float(train_loss))
         val_loss, val_results_dict, val_loader_state = run_eval_epoch(
             runtime,
             model,
@@ -188,10 +243,13 @@ def experiment(
             if val_results_dict.eval_metric is not None
             else val_loss
         )
+        val_loss_history.append(float(val_loss))
+        val_metric_history.append(float(eval_metric))
 
         if eval_metric < min_val_metric:
             min_val_metric = eval_metric
             best_epoch = epoch_idx
+            time_to_best_epoch = time.perf_counter() - training_start
             eqx.tree_serialise_leaves(temp_best_path, model)
             epochs_since_improve = 0
         else:
@@ -237,6 +295,7 @@ def experiment(
         if test_results_dict.eval_metric is not None
         else test_loss
     )
+    eval_metric_name = _eval_metric_name(config, runtime.loss_label)
 
     run_dirname = get_run_dirname(model_name)
     run_dir = finalize_training_run(
@@ -249,12 +308,17 @@ def experiment(
         final_epoch=final_epoch,
         best_epoch=best_epoch,
         training_elapsed=training_elapsed,
+        time_to_best_epoch=time_to_best_epoch,
         inference_elapsed=inference_elapsed,
         loss_label=runtime.loss_label,
+        eval_metric_name=eval_metric_name,
+        train_loss_history=train_loss_history,
+        val_loss_history=val_loss_history,
+        val_metric_history=val_metric_history,
+        test_loss=test_loss,
         test_eval_metric=test_eval_metric,
-        min_val_metric=min_val_metric,
-        min_train_loss=min_train_loss,
         test_results_dict=test_results_dict,
+        xla_scratch_size_mib=xla_scratch_size_mib,
     )
     # Unregister cleanup since we moved the file
     atexit.unregister(cleanup_temp)
@@ -284,6 +348,7 @@ def run_test(
     checkpoint_path: str,
     run_dir: str | None = None,
     metrics_name: str = "test_metrics.json",
+    metrics_seed: int | None = None,
 ) -> None:
     configure_jax()
     model_name = config.experiment_config.model_type.value
@@ -330,6 +395,29 @@ def run_test(
         if test_results_dict.eval_metric is not None
         else test_loss
     )
+    eval_metric_name = _eval_metric_name(config, runtime.loss_label)
+    scratch_batch, _, _ = runtime.test_iterate(runtime.test_loader_state)
+    if runtime.mode == TrainingMode.UNCONDITIONAL:
+        if test_key is None or runtime.unconditional_control_sampler is None:
+            raise ValueError("test_key and sampler required for UNCONDITIONAL")
+        scratch_controls = runtime.unconditional_control_sampler(
+            runtime.ts_full,
+            jr.fold_in(test_key, 0),
+            runtime.batch_size,
+        )
+    else:
+        scratch_controls = scratch_batch["driver"]
+    scratch_controls, _, _ = trim_time_aligned_batch(
+        runtime,
+        scratch_controls,
+        scratch_batch["solution"],
+        scratch_batch["driver"],
+    )
+    xla_scratch_size_mib = _compiled_xla_scratch_mib(
+        runtime.predict_batch,
+        scratch_controls,
+        model,
+    )
 
     if run_dir is not None:
         write_test_metrics(
@@ -338,10 +426,13 @@ def run_test(
             num_params=num_params,
             inference_elapsed=inference_elapsed,
             loss_label=runtime.loss_label,
+            eval_metric_name=eval_metric_name,
             test_eval_metric=test_eval_metric,
             test_results_dict=test_results_dict,
             checkpoint_path=checkpoint_path,
             metrics_name=metrics_name,
+            metrics_seed=metrics_seed,
+            xla_scratch_size_mib=xla_scratch_size_mib,
         )
 
     tqdm.write(

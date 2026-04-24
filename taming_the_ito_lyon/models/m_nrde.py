@@ -11,15 +11,13 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
 
-from stochastax.vector_field_lifts.split_vector_fields import split_multi_vector_field
-
 from stochastax.hopf_algebras import (
     HopfAlgebra,
     ShuffleHopfAlgebra,
     GLHopfAlgebra,
     MKWHopfAlgebra,
 )
-from stochastax.vector_field_lifts.bck_lift import form_bck_bracket_functions
+from stochastax.vector_field_lifts.gl_lift import form_gl_bracket_functions
 from stochastax.vector_field_lifts.lie_lift import form_lyndon_bracket_functions
 from stochastax.vector_field_lifts.mkw_lift import form_mkw_bracket_functions
 from stochastax.vector_field_lifts.vector_field_lift_types import (
@@ -87,13 +85,13 @@ class MNRDEFunc(eqx.Module):
         del t, args
 
         y_retracted = self.hidden_manifold.retract(y)
-        # One driving channel per vector field
-        vector_fields = split_multi_vector_field(
-            self.vf_mlp, self.input_path_dim, self.cde_state_dim
-        )
-        # Form the bracket functions for the vector fields
+
+        def batched_field(z: jax.Array) -> jax.Array:
+            return self.vf_mlp(z).reshape(self.input_path_dim, self.cde_state_dim)
+
+        # Form the bracket functions for the batched vector field
         bracket_functions = self.vf_lift(
-            vector_fields,
+            batched_field,
             self.hopf_algebra,
             self.hidden_manifold(),
         )
@@ -135,11 +133,13 @@ class MNDRE(eqx.Module):
     signature_depth: int = eqx.field(static=True)
     signature_window_size: int = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
+    prepend_zero_basepoint: bool = eqx.field(static=True)
     brownian_channels: tuple[int, ...] | None = eqx.field(static=True)
     brownian_corr: float | None = eqx.field(static=True)
 
     # Solver configuration (matches NeuralCDE/NeuralRDE pattern)
     solver: diffrax.AbstractAdaptiveSolver = eqx.field(static=True)
+    adjoint: diffrax.AbstractAdjoint = eqx.field(static=True)
     stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
 
     def __init__(
@@ -159,12 +159,14 @@ class MNDRE(eqx.Module):
         hidden_manifold: type[Manifold],
         hopf_algebra_type: HopfAlgebraType,
         solver: diffrax.AbstractAdaptiveSolver = diffrax.Tsit5(),
+        adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         stepsize_controller: diffrax.AbstractStepSizeController,
         # IMPORTANT: default to identity to avoid artificially symmetrising/skew-clipping
         # the output distribution (e.g. tanh produces symmetric outputs about 0).
         # This matches the NCDE/LogNCDE defaults in this repo.
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         evolving_out: bool = True,
+        prepend_zero_basepoint: bool = True,
         extrapolation_scheme: ExtrapolationScheme | None = None,
         n_recon: int | None = None,
         brownian_channels: list[int] | None = None,
@@ -187,6 +189,7 @@ class MNDRE(eqx.Module):
             else None
         )
         self.brownian_corr = float(brownian_corr) if brownian_corr is not None else None
+        self.prepend_zero_basepoint = prepend_zero_basepoint
         match hopf_algebra_type:
             case HopfAlgebraType.SHUFFLE:
                 self.hopf_algebra = ShuffleHopfAlgebra.build(
@@ -195,7 +198,7 @@ class MNDRE(eqx.Module):
                 self.vf_lift = form_lyndon_bracket_functions
             case HopfAlgebraType.GL:
                 self.hopf_algebra = GLHopfAlgebra.build(input_path_dim, signature_depth)
-                self.vf_lift = form_bck_bracket_functions
+                self.vf_lift = form_gl_bracket_functions
             case HopfAlgebraType.MKW:
                 self.hopf_algebra = MKWHopfAlgebra.build(
                     input_path_dim, signature_depth
@@ -238,7 +241,40 @@ class MNDRE(eqx.Module):
         self.n_recon = n_recon
         self.evolving_out = evolving_out
         self.solver = solver
+        self.adjoint = adjoint
         self.stepsize_controller = stepsize_controller
+
+    def _maybe_prepend_zero_basepoint(
+        self, ts: jax.Array, control_values: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        if not self.prepend_zero_basepoint:
+            return ts, control_values
+
+        if int(ts.shape[0]) < 2:
+            raise ValueError("Expected at least two timestamps when prepending a basepoint.")
+        dt = ts[1] - ts[0]
+        zero0 = jnp.zeros((1, int(control_values.shape[-1])), dtype=control_values.dtype)
+        ts0 = ts[:1] - dt
+        ts_aug = jnp.concatenate([ts0, ts], axis=0)
+        values_aug = jnp.concatenate([zero0, control_values], axis=0)
+
+        # Keep the disjoint-window partition valid after the synthetic prefix point.
+        step = int(self.signature_window_size)
+        remainder = (int(values_aug.shape[0]) - 1) % step
+        if remainder == 0:
+            return ts_aug, values_aug
+
+        pad_points = step - remainder
+        ts_pad = ts_aug[-1] + dt * jnp.arange(
+            1,
+            pad_points + 1,
+            dtype=ts.dtype,
+        )
+        values_pad = jnp.repeat(values_aug[-1:], pad_points, axis=0)
+        return (
+            jnp.concatenate([ts_aug, ts_pad], axis=0),
+            jnp.concatenate([values_aug, values_pad], axis=0),
+        )
 
     def _apply_readout(self, hidden_states: jax.Array) -> jax.Array:
         """Apply readout to hidden states."""
@@ -281,6 +317,7 @@ class MNDRE(eqx.Module):
             cde_func=self.cde_func,
             y0=h0,
             solver=self.solver,
+            adjoint=self.adjoint,
             stepsize_controller=self.stepsize_controller,
         )
 
@@ -307,20 +344,26 @@ class MNDRE(eqx.Module):
                 ts, control_values, self.n_recon
             )
             control_values = jax.vmap(control.evaluate)(ts)
-            hidden = self._forward_with_values(ts, control_values)
+            ts_aug, control_values_aug = self._maybe_prepend_zero_basepoint(
+                ts, control_values
+            )
+            hidden = self._forward_with_values(ts_aug, control_values_aug)
             outputs = self._apply_readout(hidden)
 
+            if self.prepend_zero_basepoint:
+                outputs = outputs[1 : 1 + length]
             return outputs
         else:
             # Standard mode
-            hidden = self._forward_with_values(ts, control_values)
+            ts_aug, control_values_aug = self._maybe_prepend_zero_basepoint(
+                ts, control_values
+            )
+            hidden = self._forward_with_values(ts_aug, control_values_aug)
 
             if self.evolving_out:
-                return self._apply_readout(hidden)
+                outputs = self._apply_readout(hidden)
+                if self.prepend_zero_basepoint:
+                    outputs = outputs[1 : 1 + length]
+                return outputs
 
-            # Single output case: also convert from 6D to 3x3 (matches `ncde.py`).
-            final_output = self.readout_activation(self.readout_layer(hidden[-1]))
-            if self.data_manifold is SPDManifold:
-                matrix = SPDManifold.unvech(final_output)
-                return SPDManifold.retract(matrix)
-            return self.data_manifold.retract(final_output)
+            return self._apply_readout(hidden[-1:])[0]

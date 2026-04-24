@@ -4,11 +4,11 @@ from pathlib import Path
 
 class Datasets(Enum):
     OU_PROCESS = Path("data/ou_processes/ou_process_data.npz")
-    ROUGH_OU_PROCESS = Path("data/rough_ou_processes/rough_ou_data_H0.70.npz")
     BLACK_SCHOLES = Path("data/rough_volatility/black-scholes_data.npz")
     BERGOMI = Path("data/rough_volatility/bergomi_data.npz")
     ROUGH_BERGOMI = Path("data/rough_volatility/rough_bergomi_data.npz")
     SIMPLE_RBERGOMI = Path("data/rough_volatility/simple_rbergomi_data.npz")
+    SYNTHETIC_GBM = "synthetic_gbm"
     # Backwards-compatible alias (accepts dataset_name="simple_rough_bergomi" too).
     SIMPLE_ROUGH_BERGOMI = Path("data/rough_volatility/simple_rbergomi_data.npz")
     SG_SO3_SIMULATION = Path(
@@ -21,12 +21,8 @@ class Datasets(Enum):
     OXFORD_MULTIMOTION_UNCONSTRAINED = Path(
         "data/oxford_multimotion/swinging_4_unconstrained.npz"
     )
-    SPD_COVARIANCE_SOLAR = Path(
-        "data/spd_covariance/solar_spd_covariance_trajectory.npz"
-    )
-    SPD_WISHART_DIFFUSION = Path(
-        "data/synthetic_diffusions/wishart_diffusion_data.npz"
-    )
+    SPD_WISHART_DIFFUSION = Path("data/synthetic_diffusions/wishart_diffusion_data.npz")
+    PPG_DALIA = None
 
 
 class ModelType(StrEnum):
@@ -34,7 +30,11 @@ class ModelType(StrEnum):
     LOG_NCDE = "log_ncde"
     NRDE = "nrde"
     MNRDE = "mnrde"
+    M_ODE = "m_ode"
     GRU = "gru"
+    LSTM = "lstm"
+    XLSTM = "xlstm"
+    STACKED_XLSTM = "stacked_xlstm"
 
 
 class Optimizer(StrEnum):
@@ -53,10 +53,29 @@ class StepsizeControllerType(StrEnum):
     PID = "pid"
     CONSTANT = "constant"
 
+
+class SolverType(StrEnum):
+    EES25 = "ees25"
+    EES252N = "ees252n"
+    TSIT5 = "tsit5"
+    BOSH3 = "bosh3"
+    DOPRI5 = "dopri5"
+    DOPRI8 = "dopri8"
+    HEUN = "heun"
+    EULER = "euler"
+
+
+class AdjointType(StrEnum):
+    RECURSIVE_CHECKPOINT = "recursive_checkpoint"
+    DIRECT = "direct"
+    REVERSIBLE = "reversble"
+
+
 class ManifoldType(StrEnum):
     EUCLIDEAN = "euclidean"
     SO3 = "so3"
     SPD = "spd"
+
 
 class ControlInterpolationType(StrEnum):
     HERMITE_CUBIC = "hermite_cubic"
@@ -68,7 +87,6 @@ class ExtrapolationSchemeType(StrEnum):
     HERMITE = "hermite"
     SG = "sg"
     SO3_SG = "so3_sg"
-    MLP = "mlp"
     PIECEWISE_MLP = "piecewiseMLP"
 
 

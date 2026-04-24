@@ -65,33 +65,3 @@ def apply_mpl_style() -> None:
             "savefig.pad_inches": 0.02,
         }
     )
-
-
-if __name__ == "__main__":
-    import numpy as np
-
-    from taming_the_ito_lyon.training.results_plotting import (
-        save_rough_volatility_two_panel_plot,
-    )
-
-    apply_mpl_style()
-
-    data = np.load("data/rough_ou_processes/rough_ou_data_H0.70.npz")
-    solution = np.asarray(data["solution"])
-    driver = np.asarray(data["driver"])
-
-    rng = np.random.default_rng(0)
-    idx = rng.choice(solution.shape[0], size=8, replace=False)
-
-    save_rough_volatility_two_panel_plot(
-        left=solution[idx],
-        right=driver[idx],
-        out_file="z_paper_content/rough_ou_example_solution_vs_driver.png",
-        n_plot=8,
-        left_title="Rough OU solution (8 random paths)",
-        right_title="Driver (8 random paths)",
-        left_color="black",
-        right_color="red",
-        alpha=0.6,
-        figsize=(10.0, 4.0),
-    )

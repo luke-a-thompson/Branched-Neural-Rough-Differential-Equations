@@ -48,7 +48,9 @@ class CDEFunc(eqx.Module):
             width_size=vf_hidden_dim,
             depth=vf_mlp_depth,
             activation=jnn.softplus,
-            final_activation=lambda x: x,
+            # Bound the vector field to avoid exploding hidden dynamics on long,
+            # finely sampled controls such as PPG-DaLiA.
+            final_activation=jnn.tanh,
             key=key,
         )
 
@@ -84,6 +86,7 @@ class NeuralCDE(eqx.Module):
 
     # Solver configuration
     solver: diffrax.AbstractAdaptiveSolver = eqx.field(static=True)
+    adjoint: diffrax.AbstractAdjoint = eqx.field(static=True)
     stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
     dt0: float | None = eqx.field(static=True)
 
@@ -100,6 +103,7 @@ class NeuralCDE(eqx.Module):
         key: jax.Array,
         manifold: type[Manifold],
         solver: diffrax.AbstractAdaptiveSolver = diffrax.Tsit5(),
+        adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         stepsize_controller: diffrax.AbstractStepSizeController,
         dt0: float | None = None,
         evolving_out: bool,
@@ -145,6 +149,7 @@ class NeuralCDE(eqx.Module):
 
         # Solver configuration
         self.solver = solver
+        self.adjoint = adjoint
         self.stepsize_controller = stepsize_controller
         self.dt0 = dt0
 
@@ -160,10 +165,18 @@ class NeuralCDE(eqx.Module):
 
         return jax.vmap(apply_single)(hidden_states)
 
+    def _scaled_dt0_for_observation_grid(self, length: int) -> float | None:
+        """Rescale `dt0` when solving on the native sample-index grid."""
+        if self.dt0 is None or length <= 1:
+            return self.dt0
+        return float(self.dt0) * float(length - 1)
+
     def _forward_with_control(
         self,
         ts: jax.Array,
         control: diffrax.AbstractPath,
+        *,
+        dt0: float | None,
     ) -> jax.Array:
         """Core forward pass given control path (standard Neural CDE).
 
@@ -181,10 +194,11 @@ class NeuralCDE(eqx.Module):
             solver=self.solver,
             t0=ts[0],
             t1=ts[-1],
-            dt0=self.dt0,
+            dt0=dt0,
             y0=y0,
             stepsize_controller=self.stepsize_controller,
             saveat=saveat,
+            adjoint=self.adjoint,
         )
         assert solution.ys is not None
         return solution.ys
@@ -205,19 +219,24 @@ class NeuralCDE(eqx.Module):
             to fit the control; the remainder is extrapolated.
         """
         length = control_values.shape[0]
-        ts = jnp.linspace(0.0, 1.0, length, dtype=control_values.dtype)  # (T,)
         if self.extrapolation_scheme is not None:
+            ts = jnp.linspace(0.0, 1.0, length, dtype=control_values.dtype)  # (T,)
             assert self.n_recon is not None, (
                 "n_recon must be set when using extrapolation_scheme"
             )
             control, _ = self.extrapolation_scheme.create_control(
                 ts, control_values, self.n_recon
             )
-            hidden = self._forward_with_control(ts, control)
+            hidden = self._forward_with_control(ts, control, dt0=self.dt0)
             outputs = self._apply_readout(hidden)
 
             return outputs
         else:
+            # Use the native sample-index grid for standard controls. This keeps the
+            # interpolation derivative at the scale of per-sample increments instead of
+            # amplifying it by `length - 1` on a normalized [0, 1] grid.
+            ts = jnp.arange(length, dtype=control_values.dtype)
+            dt0 = self._scaled_dt0_for_observation_grid(int(length))
             if self.control_interpolation == "hermite_cubic":
                 coeffs = diffrax.backward_hermite_coefficients(
                     ts=ts, ys=control_values
@@ -230,14 +249,8 @@ class NeuralCDE(eqx.Module):
                     f"Unknown control_interpolation={self.control_interpolation!r}. "
                     "Expected 'hermite_cubic' or 'linear'."
                 )
-            hidden = self._forward_with_control(ts, control)
+            hidden = self._forward_with_control(ts, control, dt0=dt0)
 
             if self.evolving_out:
                 return self._apply_readout(hidden)
-
-            # Single output case: also convert from 6D to 3x3
-            final_output = self.readout_activation(self.readout_layer(hidden[-1]))
-            if issubclass(self.manifold, SPDManifold):
-                matrix = SPDManifold.unvech(final_output)
-                return SPDManifold.retract(matrix)
-            return self.manifold.retract(final_output)
+            return self._apply_readout(hidden[-1:])[0]

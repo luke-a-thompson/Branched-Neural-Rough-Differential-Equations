@@ -11,6 +11,8 @@ from collections.abc import Callable
 import diffrax
 
 from stochastax.hopf_algebras import ShuffleHopfAlgebra
+from stochastax.manifolds import Manifold
+from stochastax.manifolds.spd import SPDManifold
 from .logsignatures import (
     compute_windowed_logsignatures_from_values,
 )
@@ -79,10 +81,12 @@ class NeuralRDE(eqx.Module):
 
     # Static configuration
     shuffle_hopf_algebra: ShuffleHopfAlgebra = eqx.field(static=True)
+    manifold: type[Manifold] = eqx.field(static=True)
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     signature_depth: int = eqx.field(static=True)
     signature_window_size: int = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
+    prepend_zero_basepoint: bool = eqx.field(static=True)
 
     # Extrapolation scheme
     extrapolation_scheme: ExtrapolationScheme | None = eqx.field(static=True)
@@ -90,6 +94,7 @@ class NeuralRDE(eqx.Module):
 
     # Solver configuration (matches NeuralCDE pattern)
     solver: diffrax.AbstractAdaptiveSolver = eqx.field(static=True)
+    adjoint: diffrax.AbstractAdjoint = eqx.field(static=True)
     stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
     dt0: float | None = eqx.field(static=True)
 
@@ -106,11 +111,14 @@ class NeuralRDE(eqx.Module):
         signature_window_size: int,
         *,
         key: jax.Array,
+        manifold: type[Manifold],
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         solver: diffrax.AbstractAdaptiveSolver = diffrax.Tsit5(),
+        adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         stepsize_controller: diffrax.AbstractStepSizeController,
         dt0: float | None = None,
         evolving_out: bool = True,
+        prepend_zero_basepoint: bool = False,
         extrapolation_scheme: ExtrapolationScheme | None = None,
         n_recon: int | None = None,
     ) -> None:
@@ -142,15 +150,50 @@ class NeuralRDE(eqx.Module):
             key=k3,
         )
         self.readout_activation = readout_activation
+        self.manifold = manifold
         self.signature_depth = signature_depth
         self.signature_window_size = signature_window_size
         self.evolving_out = evolving_out
+        self.prepend_zero_basepoint = prepend_zero_basepoint
         self.extrapolation_scheme = extrapolation_scheme
         self.n_recon = n_recon
 
         self.solver = solver
+        self.adjoint = adjoint
         self.stepsize_controller = stepsize_controller
         self.dt0 = dt0
+
+    def _maybe_prepend_zero_basepoint(
+        self, ts: jax.Array, control_values: jax.Array
+    ) -> tuple[jax.Array, jax.Array]:
+        if not self.prepend_zero_basepoint:
+            return ts, control_values
+
+        zero0 = jnp.zeros((1, int(control_values.shape[-1])), dtype=control_values.dtype)
+        ts_aug = jnp.concatenate([ts[:1], ts], axis=0)
+        values_aug = jnp.concatenate([zero0, control_values], axis=0)
+
+        # Keep the disjoint-window partition valid after the synthetic prefix point.
+        step = int(self.signature_window_size)
+        remainder = (int(values_aug.shape[0]) - 1) % step
+        if remainder == 0:
+            return ts_aug, values_aug
+
+        pad_points = step - remainder
+        ts_pad = jnp.repeat(ts_aug[-1:], pad_points, axis=0)
+        values_pad = jnp.repeat(values_aug[-1:], pad_points, axis=0)
+        return (
+            jnp.concatenate([ts_aug, ts_pad], axis=0),
+            jnp.concatenate([values_aug, values_pad], axis=0),
+        )
+
+    def _project_readout(self, activation: jax.Array) -> jax.Array:
+        if issubclass(self.manifold, SPDManifold):
+            matrix = SPDManifold.unvech(activation)
+            return SPDManifold.retract(matrix)
+        if activation.shape[-1] == 9:
+            return self.manifold.retract(jnp.reshape(activation, (3, 3)))
+        return self.manifold.retract(activation)
 
     def _forward_with_values(
         self,
@@ -177,6 +220,7 @@ class NeuralRDE(eqx.Module):
             cde_func=self.cde_func,
             y0=h0,
             solver=self.solver,
+            adjoint=self.adjoint,
             stepsize_controller=self.stepsize_controller,
             dt0=self.dt0,
         )
@@ -190,11 +234,11 @@ class NeuralRDE(eqx.Module):
         return self._forward_with_values(ts, control_values)
 
     def _apply_readout(self, hidden_states: jax.Array) -> jax.Array:
-        """Apply readout to hidden states, reshaping 9D outputs to (3, 3)."""
+        """Apply readout to hidden states with manifold-aware output projection."""
 
         def apply_single(y: jax.Array) -> jax.Array:
             activation = self.readout_activation(self.readout_layer(y))
-            return jnp.reshape(activation, (3, 3))
+            return self._project_readout(activation)
 
         return jax.vmap(apply_single)(hidden_states)
 
@@ -223,14 +267,20 @@ class NeuralRDE(eqx.Module):
             control, _ = self.extrapolation_scheme.create_control(
                 ts, control_values, self.n_recon
             )
-            hidden_over_time = self._forward_with_control(ts, control)
+            control_values = jax.vmap(control.evaluate)(ts)
+            ts_aug, control_values_aug = self._maybe_prepend_zero_basepoint(
+                ts, control_values
+            )
+            hidden_over_time = self._forward_with_values(ts_aug, control_values_aug)
         else:
-            hidden_over_time = self._forward_with_values(ts, control_values)
+            ts_aug, control_values_aug = self._maybe_prepend_zero_basepoint(
+                ts, control_values
+            )
+            hidden_over_time = self._forward_with_values(ts_aug, control_values_aug)
 
         if self.evolving_out:
+            if self.prepend_zero_basepoint:
+                hidden_over_time = hidden_over_time[1 : 1 + length]
             return self._apply_readout(hidden_over_time)
         else:
-            final_output = self.readout_activation(
-                self.readout_layer(hidden_over_time[-1])
-            )
-            return jnp.reshape(final_output, (3, 3))
+            return self._apply_readout(hidden_over_time[-1:])[0]

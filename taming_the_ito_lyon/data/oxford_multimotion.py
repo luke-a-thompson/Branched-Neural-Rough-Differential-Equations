@@ -15,6 +15,7 @@ from taming_the_ito_lyon.data.integrity_checks import (
     ensure_b_w_l_c,
     validate_window_alignment,
 )
+from taming_the_ito_lyon.utils.so3 import log_map
 
 
 @dataclass
@@ -69,7 +70,21 @@ class OxfordMultimotionDataset(DatasetProtocol):
         solution_np = ensure_b_w_l_c("solution", solution_np)
         validate_window_alignment(driver_np, solution_np)
 
-        self._driver_np = driver_np
+        if self.config.experiment_config.uses_flat_so3_driver:
+            driver_features_np = np.asarray(driver_np, dtype=np.float32)
+        else:
+            # Use the same minimal SO(3) chart as the synthetic SO(3) dataset so
+            # extrapolation models can consume 3 value channels plus time.
+            driver_rotmats = jnp.asarray(driver_np, dtype=jnp.float32).reshape(
+                driver_np.shape[0],
+                driver_np.shape[1],
+                driver_np.shape[2],
+                3,
+                3,
+            )
+            driver_features_np = np.asarray(log_map(driver_rotmats), dtype=np.float32)
+
+        self._driver_np = driver_features_np
         self._solution_np = solution_np
         self._num_examples = int(driver_np.shape[0])  # B*4
         self._num_windows = int(driver_np.shape[1])  # windows per example
@@ -103,13 +118,13 @@ class OxfordMultimotionDataset(DatasetProtocol):
 
         _, _, ctx_len, channels = driver_np.shape
         _, _, tgt_len, channels2 = solution_np.shape
-        if channels2 != channels:
+        if int(channels) not in (3, 9):
             raise ValueError(
-                f"Driver/solution channel mismatch: driver={channels}, solution={channels2}"
+                f"Expected SO(3) driver channels to be either 3 (Lie algebra) or 9 (flattened matrices), got channels={channels}. Total shape: {driver_np.shape}"
             )
-        if int(channels) != 9:
+        if int(channels2) != 9:
             raise ValueError(
-                f"Expected SO(3) rotations flattened as 9 channels, got channels={channels}. Total shape: {driver_np.shape}"
+                f"Expected SO(3) targets flattened as 9 channels, got channels={channels2}. Total shape: {solution_np.shape}"
             )
 
         num_windows = int(self._num_windows)

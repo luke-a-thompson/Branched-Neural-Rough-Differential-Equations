@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
         nargs="?",
         help=(
             "Path to a directory to scan OR a folder name to match under ./data "
-            "(e.g. `spd_covariance`)."
+            "(e.g. `synthetic_diffusions`)."
         ),
     )
     group = parser.add_mutually_exclusive_group()
@@ -142,4 +142,3 @@ def main(argv: list[str] | None = None) -> int:
             print(f"  Error reading file: {exc}")
 
     return 0
-

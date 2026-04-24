@@ -1,4 +1,4 @@
-from .config_options import ModelType, Optimizer, ExtrapolationSchemeType, Datasets
+from .config_options import ModelType, Optimizer, ExtrapolationSchemeType, Datasets, SolverType, AdjointType
 from .config import (
     Config,
     ExperimentConfig,
@@ -6,7 +6,11 @@ from .config import (
     LogNCDEConfig,
     NRDEConfig,
     MNRDEConfig,
+    MODEConfig,
     GRUConfig,
+    LSTMConfig,
+    XLSTMConfig,
+    StackedXLSTMConfig,
     load_toml_config,
 )
 
@@ -21,6 +25,12 @@ __all__ = [
     "LogNCDEConfig",
     "NRDEConfig",
     "MNRDEConfig",
+    "MODEConfig",
     "GRUConfig",
+    "LSTMConfig",
+    "XLSTMConfig",
+    "StackedXLSTMConfig",
     "load_toml_config",
+    "SolverType",
+    "AdjointType",
 ]

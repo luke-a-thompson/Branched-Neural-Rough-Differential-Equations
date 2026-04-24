@@ -25,6 +25,7 @@ from typing import Protocol
 
 
 apply_mpl_style()
+DEFAULT_RESULTS_TIMES = (128, 256, 384, 512)
 
 
 def _extract_first_channel_paths(x: jax.Array) -> np.ndarray:
@@ -36,6 +37,20 @@ def _extract_first_channel_paths(x: jax.Array) -> np.ndarray:
     x_np = np.array(jax.device_get(x))
     x_flat = x_np.reshape(x_np.shape[0], x_np.shape[1], -1)  # (B, T, Cflat)
     return x_flat[:, :, 0]  # (B, T)
+
+
+def _valid_times_to_save(
+    times_to_save: list[int] | None,
+    *batch_groups: list[jax.Array],
+) -> list[int]:
+    if times_to_save is None:
+        return []
+    common_horizon = min(
+        int(np.array(jax.device_get(batch)).shape[1])
+        for batches in batch_groups
+        for batch in batches
+    )
+    return [int(t) for t in times_to_save if int(t) < common_horizon]
 
 
 def _ito_level12_feature_vectors(
@@ -64,7 +79,6 @@ def _ito_level12_feature_vectors(
             f"w_paths and x_paths must have the same shape, got {w_paths.shape} and {x_paths.shape}"
         )
     if int(w_paths.shape[1]) < 2:
-        # Not enough points to form increments; return zeros.
         b = int(w_paths.shape[0])
         d = 5 if include_level1 else 3
         return np.zeros((b, d), dtype=np.float32)
@@ -118,7 +132,6 @@ def _mmd_rbf_median_heuristic(
 
     diffs = pooled_m[:, None, :] - pooled_m[None, :, :]
     dist2 = np.sum(diffs * diffs, axis=-1)  # (m, m)
-    # Median of off-diagonal distances.
     off = dist2[~np.eye(m, dtype=bool)]
     med = float(np.median(off)) if off.size > 0 else float(np.median(dist2))
     if not np.isfinite(med) or med <= 0.0:
@@ -281,14 +294,11 @@ def _driver_output_consistency_metrics(
     log_s = np.log(s_safe)  # (n, T)
     dlog_s = np.diff(log_s, axis=1)  # (n, T-1)
 
-    # Use time channel to estimate dt (assumed uniform).
     t = x[0, :, 0]
     dt = float((t[-1] - t[0]) / float(T - 1))
     if dt <= 0.0:
         dt = 1.0 / float(T - 1)
 
-    # Only use the last non-time channel (t, RL, Z) -> Z.
-    # This keeps the diagnostic "Itô w.r.t. Brownian Z" and ignores the RL channel.
     dX = np.diff(x[:, :, -1:], axis=1)  # (n, T-1, D=1)
     D = int(dX.shape[-1])
 
@@ -337,13 +347,69 @@ class ResultsGatheringFn(Protocol):
     ) -> ResultsDict: ...
 
 
+def get_ppg_dalia_results(
+    preds: list[jax.Array] | jax.Array,
+    targets: list[jax.Array] | jax.Array,
+    controls: list[jax.Array] | jax.Array | None,
+    epoch_idx: int,
+    model_name: str,
+    times_to_save: list[int] | None = None,
+    n_plot: int | None = None,
+    save_plot_every: int = 1,
+    config: Config | None = None,
+) -> ResultsDict:
+    """PPG-DaLiA uses loss-space MSE for model selection and reporting.
+
+    Returning ``eval_metric=None`` ensures the training loop falls back to the
+    already-computed validation/test loss instead of injecting an auxiliary
+    dataset-specific metric.
+    """
+    del (
+        preds,
+        targets,
+        controls,
+        epoch_idx,
+        model_name,
+        times_to_save,
+        n_plot,
+        save_plot_every,
+        config,
+    )
+    return ResultsDict(eval_metric=None, results_times=[], results=[])
+
+
+def get_generic_path_results(
+    preds: list[jax.Array] | jax.Array,
+    targets: list[jax.Array] | jax.Array,
+    controls: list[jax.Array] | jax.Array | None,
+    epoch_idx: int,
+    model_name: str,
+    times_to_save: list[int] | None = None,
+    n_plot: int | None = None,
+    save_plot_every: int = 1,
+    config: Config | None = None,
+) -> ResultsDict:
+    del (
+        preds,
+        targets,
+        controls,
+        epoch_idx,
+        model_name,
+        times_to_save,
+        n_plot,
+        save_plot_every,
+        config,
+    )
+    return ResultsDict(eval_metric=None, results_times=[], results=[])
+
+
 def get_rough_volatility_results(
     preds: list[jax.Array] | jax.Array,
     targets: list[jax.Array] | jax.Array,
     controls: list[jax.Array] | jax.Array | None,
     epoch_idx: int,
     model_name: str,
-    times_to_save: list[int] | None = [128, 256, 384, 512],
+    times_to_save: list[int] | None = list(DEFAULT_RESULTS_TIMES),
     n_plot: int | None = None,
     save_plot_every: int = 1,
     config: Config | None = None,
@@ -351,11 +417,8 @@ def get_rough_volatility_results(
     preds_batches = preds if isinstance(preds, list) else [preds]
     targets_batches = targets if isinstance(targets, list) else [targets]
     controls_batches = (
-        None
-        if controls is None
-        else (controls if isinstance(controls, list) else [controls])
+        None if controls is None else (controls if isinstance(controls, list) else [controls])
     )
-
     preds0 = np.array(jax.device_get(preds_batches[0]))
     targets0 = np.array(jax.device_get(targets_batches[0]))
     preds0_flat = preds0.reshape(preds0.shape[0], preds0.shape[1], -1)
@@ -393,107 +456,82 @@ def get_rough_volatility_results(
             preds_color="tab:orange",
         )
 
-    if times_to_save is None:
+    valid_times = _valid_times_to_save(times_to_save, preds_batches, targets_batches)
+    if len(valid_times) == 0:
         return ResultsDict(eval_metric=None, results_times=[], results=[])
 
     ks_stats: list[float] = []
-    for t in times_to_save:
-        # KS per batch at time step t, then average across batches
-        ks_per_batch: list[float] = []
-        for pb, tb in zip(preds_batches, targets_batches):
-            pred_samples = np.array(jax.device_get(pb))[:, t, ...].ravel()
-            target_samples = np.array(jax.device_get(tb))[:, t, ...].ravel()
-            ks_res, _ = ks_2samp(pred_samples, target_samples)  # type: ignore
-            ks_per_batch.append(float(ks_res))  # type: ignore
+    for t in valid_times:
+        ks_per_batch = []
+        for pred_batch, target_batch in zip(preds_batches, targets_batches):
+            pred_samples = np.array(jax.device_get(pred_batch))[:, t, ...].ravel()
+            target_samples = np.array(jax.device_get(target_batch))[:, t, ...].ravel()
+            ks_res, _ = ks_2samp(pred_samples, target_samples)  # type: ignore[arg-type]
+            ks_per_batch.append(float(ks_res))
         ks_stats.append(float(np.mean(ks_per_batch)))
 
-    extra_scalar_metrics: dict[str, float] = {}
-
-    # Itô / branched level-2 distribution-matching loss for neural SDE (log-price).
-    #
-    # For SIMPLE_RBERGOMI, compute an MMD^2 between per-path level-1/2 Itô features
-    # from (W_model, X_model) vs (W_gt, X_gt), where W_model is the model's latent
-    # Brownian channel in the sampled control, and (W_gt, X_gt) are taken from the
-    # simulator dataset file (paired by construction).
     if (
         config is not None
         and config.experiment_config.dataset_name == Datasets.SIMPLE_RBERGOMI
         and controls_batches is not None
     ):
-        # Model samples (first eval batch only).
-        x_model = _extract_first_channel_paths(preds_batches[0])  # (B, T)
-        control_np0 = np.array(jax.device_get(controls_batches[0]))  # (B, T, C)
+        x_model = _extract_first_channel_paths(preds_batches[0])
+        control_np0 = np.array(jax.device_get(controls_batches[0]))
         if control_np0.ndim != 3:
             raise ValueError(
                 f"Expected model controls shaped (B, T, C), got {control_np0.shape}"
             )
-        # In unconditional mode the control includes time in channel 0 and then
-        # Brownian driver channels. Time must not be used for quadratic variation.
-        if int(control_np0.shape[-1]) >= 2:
-            w_model = control_np0[:, :, 1]
-        else:
-            # Fallback for non-time-augmented controls: treat the sole channel as W.
-            w_model = control_np0[:, :, 0]
-
-        # Ground truth samples from dataset file (paired W_gt with X_gt).
+        w_model = control_np0[:, :, 1] if int(control_np0.shape[-1]) >= 2 else control_np0[:, :, 0]
         data = np.load(config.experiment_config.dataset_name.value)
         w_gt_raw = np.asarray(data["driver"], dtype=np.float32)
-        x_gt_raw = np.asarray(data["log_price"], dtype=np.float32)
+        x_gt = np.asarray(data["log_price"], dtype=np.float32)
         if w_gt_raw.ndim == 3:
             w_gt = w_gt_raw[:, :, 0]
         elif w_gt_raw.ndim == 2:
             w_gt = w_gt_raw
         else:
             raise ValueError(f"Unexpected gt driver shape {w_gt_raw.shape}")
-        x_gt = x_gt_raw
-
-        # Align lengths (use common prefix).
-        t_len = min(int(w_model.shape[1]), int(x_model.shape[1]), int(w_gt.shape[1]), int(x_gt.shape[1]))
-        w_model = w_model[:, :t_len]
-        x_model = x_model[:, :t_len]
-        w_gt = w_gt[:, :t_len]
-        x_gt = x_gt[:, :t_len]
-
+        t_len = min(
+            int(w_model.shape[1]),
+            int(x_model.shape[1]),
+            int(w_gt.shape[1]),
+            int(x_gt.shape[1]),
+        )
         n = min(int(w_model.shape[0]), int(w_gt.shape[0]), 2048)
         feat_model = _ito_level12_feature_vectors(
-            w_paths=w_model[:n], x_paths=x_model[:n], include_level1=True
+            w_paths=w_model[:n, :t_len],
+            x_paths=x_model[:n, :t_len],
+            include_level1=True,
         )
         feat_gt = _ito_level12_feature_vectors(
-            w_paths=w_gt[:n], x_paths=x_gt[:n], include_level1=True
+            w_paths=w_gt[:n, :t_len],
+            x_paths=x_gt[:n, :t_len],
+            include_level1=True,
         )
-        extra_scalar_metrics["ito_level2_mmd2"] = _mmd_rbf_median_heuristic(
-            feat_model, feat_gt
-        )
+        extra_scalar_metrics = {
+            "ito_level2_mmd2": _mmd_rbf_median_heuristic(feat_model, feat_gt)
+        }
     else:
-        # Legacy diagnostics (used for other rough-vol datasets).
-        # (1) Branched Itô signature moment gap between preds and targets (unpaired).
         pred_price0 = _extract_first_channel_paths(preds_batches[0])
         target_price0 = _extract_first_channel_paths(targets_batches[0])
-        extra_scalar_metrics.update(
-            _branched_ito_signature_moment_gap_metrics(
-                pred_paths=pred_price0, target_paths=target_price0
-            )
+        extra_scalar_metrics = _branched_ito_signature_moment_gap_metrics(
+            pred_paths=pred_price0,
+            target_paths=target_price0,
         )
-
-        # (2) Driver→output consistency metric (pred-only; needs controls from eval loop).
         if controls_batches is not None:
-            control_np0 = np.array(jax.device_get(controls_batches[0]))
             extra_scalar_metrics.update(
                 _driver_output_consistency_metrics(
-                    control_values=control_np0, price_paths=pred_price0
+                    control_values=np.array(jax.device_get(controls_batches[0])),
+                    price_paths=pred_price0,
                 )
             )
 
-    results_dict = ResultsDict(
+    return ResultsDict(
         eval_metric=float(np.median(ks_stats)),
-        results_times=[float(t) for t in times_to_save],
+        results_times=[float(t) for t in valid_times],
         results=[float(s) for s in ks_stats],
-        extra_scalar_metrics=extra_scalar_metrics
-        if len(extra_scalar_metrics) > 0
-        else None,
+        extra_scalar_metrics=extra_scalar_metrics if extra_scalar_metrics else None,
     )
-
-    return results_dict
 
 
 def get_sg_so3_simulation_results(
@@ -521,16 +559,12 @@ def get_sg_so3_simulation_results(
         Empty ResultsDict (plots saved to disk)
     """
     del controls
-    # We only ever plot one batch. If a list is passed, take the first batch.
     preds0 = preds[0] if isinstance(preds, list) else preds
     targets0 = targets[0] if isinstance(targets, list) else targets
-
-    # Convert to numpy for plotting
     preds_np = np.array(jax.device_get(preds0))
     targets_np = np.array(jax.device_get(targets0))
 
     if n_plot is not None and epoch_idx % save_plot_every == 0:
-        # Create output directory
         base_out_dir = os.environ.get(
             "SG_SO3_SPHERE_PLOT_DIR", "z_paper_content/sg_so3_sphere_by_epoch"
         )
@@ -597,7 +631,7 @@ def get_spd_covariance_results(
     controls: list[jax.Array] | jax.Array | None,
     epoch_idx: int,
     model_name: str,
-    times_to_save: list[int] | None = [128, 256, 384, 512],
+    times_to_save: list[int] | None = list(DEFAULT_RESULTS_TIMES),
     n_plot: int | None = None,
     save_plot_every: int = 1,
     config: Config | None = None,
@@ -610,10 +644,8 @@ def get_spd_covariance_results(
     """
     del controls, config
 
-    # We only ever plot one batch. If a list is passed, take the first batch.
     preds0 = preds[0] if isinstance(preds, list) else preds
     targets0 = targets[0] if isinstance(targets, list) else targets
-
     preds_np = np.array(jax.device_get(preds0))
     targets_np = np.array(jax.device_get(targets0))
 
@@ -630,13 +662,11 @@ def get_spd_covariance_results(
             paths=targets_np,
             out_file=os.path.join(out_dir, f"eig_targets_epoch_{epoch_number:05d}.png"),
             n_plot=n_plot0,
-            title="Targets (eigenvalues)",
         )
         save_spd_covariance_eigenvalue_trajectory_single_plot(
             paths=preds_np,
             out_file=os.path.join(out_dir, f"eig_preds_epoch_{epoch_number:05d}.png"),
             n_plot=n_plot0,
-            title="Preds (eigenvalues)",
         )
         fan_out_dir = os.environ.get(
             "SPD_COV_EIG_FAN_PLOT_DIR", "z_paper_content/spd_covariance_fan_by_epoch"
@@ -649,17 +679,12 @@ def get_spd_covariance_results(
             paths=targets_np,
             out_file=os.path.join(fan_out_dir, f"fan_targets_epoch_{epoch_number:05d}.png"),
             max_paths=max_paths,
-            title="Targets (eigenvalues)",
         )
         save_spd_covariance_eigenvalue_fan_single_plot(
             paths=preds_np,
             out_file=os.path.join(fan_out_dir, f"fan_preds_epoch_{epoch_number:05d}.png"),
             max_paths=max_paths,
-            title="Preds (eigenvalues)",
         )
-
-    if times_to_save is None:
-        return ResultsDict(eval_metric=None, results_times=[], results=[])
 
     preds_batches = preds if isinstance(preds, list) else [preds]
     targets_batches = targets if isinstance(targets, list) else [targets]
@@ -675,7 +700,6 @@ def get_spd_covariance_results(
         if x_np.ndim == 4 and x_np.shape[-2:] == (3, 3):
             return np.asarray(x_np[:, t, :, :], dtype=np.float64)
         if x_np.ndim == 3 and int(x_np.shape[-1]) == 6:
-            # Unvech each sample at the selected time index.
             xt = x_np[:, t, :]  # (B, 6)
             from stochastax.manifolds.spd import SPDManifold
 
@@ -687,23 +711,24 @@ def get_spd_covariance_results(
 
     def _eigvals_at_time(x: jax.Array, t: int) -> np.ndarray:
         mats = _as_spd_mats_at_time(x, t)
-        # Symmetrise to stabilise eigenvalues under FP noise.
         mats = 0.5 * (mats + np.swapaxes(mats, -1, -2))
         eigs = np.linalg.eigvalsh(mats)  # (B, 3)
-        # Clip to avoid negative/zero eigenvalues from numerical error.
         eps = 1e-12
         eigs = np.clip(eigs, eps, None)
         if os.environ.get("SPD_COV_W1_LOGEIG", "0") == "1":
             eigs = np.log(eigs)
         return eigs
 
+    valid_times = _valid_times_to_save(times_to_save, preds_batches, targets_batches)
+    if len(valid_times) == 0:
+        return ResultsDict(eval_metric=None, results_times=[], results=[])
+
     w1_stats: list[float] = []
-    for t in times_to_save:
+    for t in valid_times:
         w1_per_batch: list[float] = []
         for pb, tb in zip(preds_batches, targets_batches):
             pred_eigs = _eigvals_at_time(pb, int(t))  # (B, 3)
             target_eigs = _eigvals_at_time(tb, int(t))  # (B, 3)
-            # 1D Wasserstein per eigenvalue coordinate, then average.
             w1_eigs = []
             for k in range(3):
                 w1_eigs.append(
@@ -714,6 +739,6 @@ def get_spd_covariance_results(
 
     return ResultsDict(
         eval_metric=float(np.median(w1_stats)),
-        results_times=[float(t) for t in times_to_save],
+        results_times=[float(t) for t in valid_times],
         results=[float(s) for s in w1_stats],
     )

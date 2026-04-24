@@ -6,7 +6,11 @@ import math
 from pathlib import Path
 
 from taming_the_ito_lyon.config import Config, load_toml_config
-from taming_the_ito_lyon.paper.tables_rough_vol import model_pretty_name
+from taming_the_ito_lyon.paper.tables_rough_vol import (
+    extract_first_seed_payload,
+    load_seed_payloads,
+    model_pretty_name,
+)
 
 
 FROBENIUS_DISPLAY_SCALE: float = 1e2
@@ -47,13 +51,15 @@ def _to_float(value: object, label: str) -> float:
     raise ValueError(f"Expected float-compatible value for '{label}', got {value!r}")
 
 
-def _mean_and_two_sigma(values: list[float]) -> tuple[float, float]:
+def _mean_and_std(values: list[float]) -> tuple[float, float | None]:
     if len(values) == 0:
         raise ValueError("Cannot compute statistics for empty list.")
     mean = float(sum(values) / float(len(values)))
-    variance = float(sum((v - mean) ** 2 for v in values) / float(len(values)))
+    if len(values) < 2:
+        return mean, None
+    variance = float(sum((v - mean) ** 2 for v in values) / float(len(values) - 1))
     sigma = float(math.sqrt(variance))
-    return mean, 2.0 * sigma
+    return mean, sigma
 
 
 def _resolve_metrics_path(run_dir: Path, preferred: str | None) -> Path:
@@ -91,17 +97,19 @@ def _extract_inference_s(metrics: dict[str, object]) -> float | None:
 
 
 def _extract_frobenius_test(metrics: dict[str, object]) -> float | None:
-    frob = metrics.get("frobenius")
-    if not isinstance(frob, dict):
-        return None
-    value = frob.get("test")
+    test_section = _expect_dict(metrics, "test")
+    metric = _expect_dict(test_section, "metric")
+    value = metric.get("value") if metric.get("name") == "frobenius" else None
     return float(value) if isinstance(value, (int, float)) else None
 
 
 def _extract_rge(metrics: dict[str, object]) -> float | None:
-    results_dict = metrics.get("test_results_dict")
-    if not isinstance(results_dict, dict):
-        return None
+    test_section = _expect_dict(metrics, "test")
+    metric = _expect_dict(test_section, "metric")
+    if metric.get("name") == "rge":
+        value = metric.get("value")
+        return float(value) if isinstance(value, (int, float)) else None
+    results_dict = _expect_dict(test_section, "results_dict")
     extra_scalar = results_dict.get("extra_scalar_metrics")
     if not isinstance(extra_scalar, dict):
         return None
@@ -156,7 +164,7 @@ def build_rows(
             metrics_path = _resolve_metrics_path(run_dir, metrics_file)
             if not metrics_path.exists():
                 raise FileNotFoundError(f"Missing metrics file at {metrics_path}")
-            metrics = _load_json(metrics_path)
+            metrics = extract_first_seed_payload(_load_json(metrics_path))
             inference_s = _extract_inference_s(metrics)
             frob_test = _extract_frobenius_test(metrics)
             rge = _extract_rge(metrics)
@@ -164,8 +172,7 @@ def build_rows(
             frob_ci = None
             rge_ci = None
         else:
-            metrics_paths = _resolve_seed_metrics_paths(run_dir, seeds)
-            metrics_payloads = [_load_json(path) for path in metrics_paths]
+            metrics_payloads = load_seed_payloads(run_dir, seeds)
             inference_vals = [
                 v for v in (_extract_inference_s(p) for p in metrics_payloads) if v is not None
             ]
@@ -175,17 +182,17 @@ def build_rows(
             rge_vals = [v for v in (_extract_rge(p) for p in metrics_payloads) if v is not None]
 
             inference_s, inference_ci = (
-                _mean_and_two_sigma([float(v) for v in inference_vals])
+                _mean_and_std([float(v) for v in inference_vals])
                 if len(inference_vals) > 0
                 else (None, None)
             )
             frob_test, frob_ci = (
-                _mean_and_two_sigma([float(v) for v in frob_vals])
+                _mean_and_std([float(v) for v in frob_vals])
                 if len(frob_vals) > 0
                 else (None, None)
             )
             rge, rge_ci = (
-                _mean_and_two_sigma([float(v) for v in rge_vals]) if len(rge_vals) > 0 else (None, None)
+                _mean_and_std([float(v) for v in rge_vals]) if len(rge_vals) > 0 else (None, None)
             )
 
             metrics = metrics_payloads[0]
@@ -262,4 +269,3 @@ def render_so3_table(
 ) -> str:
     rows = build_rows(run_dirs=run_dirs, metrics_file=metrics_file, seeds=seeds)
     return render_table(rows=rows)
-

@@ -1,0 +1,35 @@
+[experiment_config]
+model_type = "lstm"
+dataset_name = "simple_rbergomi"
+
+# Optimizer
+optimizer = "adamw"
+learning_rate = 3e-4
+weight_decay = 0.000001
+max_grad_norm = 1.0
+
+# Training
+loss = "sigker"
+seed = 1
+batch_size = 1024
+epochs = 100
+
+# Training mode
+training_mode = "unconditional"
+
+manifold = "euclidean"
+hidden_manifold = "euclidean"
+evolving_out = true
+
+[solver_config]
+stepsize_controller = "pid"
+rtol = 1e-3
+atol = 1e-3
+dtmin = 1e-4
+
+[lstm_config]
+lstm_state_dim = 32
+num_layers = 2
+init_hidden_dim = 32
+initial_cond_mlp_depth = 2
+out_size = 1

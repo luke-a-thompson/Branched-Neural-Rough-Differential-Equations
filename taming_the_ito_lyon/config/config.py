@@ -21,6 +21,8 @@ from taming_the_ito_lyon.config.config_options import (
     ManifoldType,
     StepsizeControllerType,
     ControlInterpolationType,
+    SolverType,
+    AdjointType,
 )
 
 
@@ -58,6 +60,13 @@ class ExperimentConfig(BaseModel):
     test_fraction: PositiveFloat = Field(
         default=0.1, le=1.0, description="Fraction of data for testing"
     )
+    synthetic_gbm_dim: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Optional channel dimension override for the in-memory synthetic GBM "
+            "benchmark dataset."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_fractions_sum(self) -> ExperimentConfig:
@@ -88,12 +97,22 @@ class ExperimentConfig(BaseModel):
                 ModelType.NRDE,
                 ModelType.MNRDE,
                 ModelType.GRU,
+                ModelType.LSTM,
+                ModelType.XLSTM,
+                ModelType.STACKED_XLSTM,
             ):
                 raise ValueError(
                     "extrapolation_scheme is only supported for model_type in "
-                    "{ncde, log_ncde, nrde, mnrde, gru}."
+                    "{ncde, log_ncde, nrde, mnrde, gru, lstm, xlstm, stacked_xlstm}."
                 )
         return self
+
+    @property
+    def uses_flat_so3_driver(self) -> bool:
+        return (
+            self.model_type == ModelType.M_ODE
+            or self.extrapolation_scheme == ExtrapolationSchemeType.SO3_SG
+        )
 
     # Optimizer
     optimizer: Optimizer = Field(description="Optimizer name")
@@ -176,6 +195,10 @@ class ExperimentConfig(BaseModel):
                     raise ValueError(
                         "extrapolation_scheme must be None when training_mode='unconditional'"
                     )
+                if self.model_type == ModelType.M_ODE:
+                    raise ValueError(
+                        "model_type='m_ode' only supports conditional training"
+                    )
             case _:
                 raise ValueError(f"Unknown training mode: {self.training_mode}")
         return self
@@ -186,6 +209,13 @@ class SolverConfig(BaseModel):
 
     stepsize_controller: StepsizeControllerType = Field(
         description="Stepsize controller to use"
+    )
+    solver: SolverType = Field(
+        default=SolverType.TSIT5, description="ODE solver to use"
+    )
+    adjoint: AdjointType = Field(
+        default=AdjointType.RECURSIVE_CHECKPOINT,
+        description="Adjoint method for backpropagation through the ODE solve",
     )
 
     # Solver tolerances
@@ -343,6 +373,69 @@ class GRUConfig(BaseModel):
     out_size: PositiveInt = Field(description="Output channels predicted by readout")
 
 
+class LSTMConfig(BaseModel):
+    """Top-level stacked LSTM configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lstm_state_dim: PositiveInt = Field(description="LSTM hidden state dimension")
+    num_layers: PositiveInt = Field(
+        default=2, description="Number of stacked recurrent layers"
+    )
+    init_hidden_dim: PositiveInt = Field(
+        description="Initial condition MLP width (controls hidden layer width)",
+        validation_alias=AliasChoices("init_hidden_dim", "mlp_hidden_dim"),
+    )
+    initial_cond_mlp_depth: PositiveInt = Field(
+        description="Initial condition MLP depth (number of hidden layers)"
+    )
+    out_size: PositiveInt = Field(description="Output channels predicted by readout")
+
+
+class XLSTMConfig(BaseModel):
+    """Top-level single-layer xLSTM configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    d_model: PositiveInt = Field(description="Model width")
+    num_heads: PositiveInt = Field(description="Number of mLSTM heads")
+    d_conv: PositiveInt = Field(default=4, description="Depthwise convolution width")
+    xlstm_expand: PositiveInt = Field(default=2, description="Inner expansion factor")
+    ffn_expand: PositiveInt = Field(default=2, description="FFN expansion factor")
+    use_ffn: bool = Field(default=True, description="Whether to include the FFN block")
+    out_size: PositiveInt = Field(description="Output channels predicted by readout")
+
+
+class StackedXLSTMConfig(BaseModel):
+    """Top-level stacked xLSTM configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    d_model: PositiveInt = Field(description="Model width")
+    num_heads: PositiveInt = Field(description="Number of mLSTM heads")
+    num_layers: PositiveInt = Field(description="Number of stacked xLSTM layers")
+    d_conv: PositiveInt = Field(default=4, description="Depthwise convolution width")
+    xlstm_expand: PositiveInt = Field(default=2, description="Inner expansion factor")
+    ffn_expand: PositiveInt = Field(default=2, description="FFN expansion factor")
+    use_ffn: bool = Field(default=True, description="Whether to include the FFN block")
+    out_size: PositiveInt = Field(description="Output channels predicted by readout")
+
+
+class MODEConfig(BaseModel):
+    """Top-level manifold Neural ODE configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vf_hidden_dim: PositiveInt = Field(description="Vector field MLP width")
+    vf_mlp_depth: PositiveInt = Field(
+        description="Vector field MLP depth (number of hidden layers)"
+    )
+    output_scale: PositiveFloat = Field(
+        default=1.0,
+        description="Bound on local coordinate velocity after tanh",
+    )
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -352,7 +445,11 @@ class Config(BaseModel):
     log_ncde_config: LogNCDEConfig | None = None
     nrde_config: NRDEConfig | None = None
     mnrde_config: MNRDEConfig | None = None
+    m_ode_config: MODEConfig | None = None
     gru_config: GRUConfig | None = None
+    lstm_config: LSTMConfig | None = None
+    xlstm_config: XLSTMConfig | None = None
+    stacked_xlstm_config: StackedXLSTMConfig | None = None
 
     @model_validator(mode="after")
     def validate_model_config_exists(self) -> "Config":
@@ -364,7 +461,11 @@ class Config(BaseModel):
             ModelType.LOG_NCDE: self.log_ncde_config,
             ModelType.NRDE: self.nrde_config,
             ModelType.MNRDE: self.mnrde_config,
+            ModelType.M_ODE: self.m_ode_config,
             ModelType.GRU: self.gru_config,
+            ModelType.LSTM: self.lstm_config,
+            ModelType.XLSTM: self.xlstm_config,
+            ModelType.STACKED_XLSTM: self.stacked_xlstm_config,
         }
 
         active_config = config_map.get(model_type)
@@ -379,7 +480,11 @@ class Config(BaseModel):
             self.log_ncde_config,
             self.nrde_config,
             self.mnrde_config,
+            self.m_ode_config,
             self.gru_config,
+            self.lstm_config,
+            self.xlstm_config,
+            self.stacked_xlstm_config,
         ]
         num_provided = sum(c is not None for c in all_configs)
         if num_provided > 1:
@@ -390,7 +495,17 @@ class Config(BaseModel):
     @property
     def nn_config(
         self,
-    ) -> NCDEConfig | LogNCDEConfig | NRDEConfig | MNRDEConfig | GRUConfig:
+    ) -> (
+        NCDEConfig
+        | LogNCDEConfig
+        | NRDEConfig
+        | MNRDEConfig
+        | MODEConfig
+        | GRUConfig
+        | LSTMConfig
+        | XLSTMConfig
+        | StackedXLSTMConfig
+    ):
         """Get the active model configuration based on model_type."""
         model_type = self.experiment_config.model_type
 
@@ -406,9 +521,21 @@ class Config(BaseModel):
         elif model_type == ModelType.MNRDE:
             assert self.mnrde_config is not None
             return self.mnrde_config
+        elif model_type == ModelType.M_ODE:
+            assert self.m_ode_config is not None
+            return self.m_ode_config
         elif model_type == ModelType.GRU:
             assert self.gru_config is not None
             return self.gru_config
+        elif model_type == ModelType.LSTM:
+            assert self.lstm_config is not None
+            return self.lstm_config
+        elif model_type == ModelType.XLSTM:
+            assert self.xlstm_config is not None
+            return self.xlstm_config
+        elif model_type == ModelType.STACKED_XLSTM:
+            assert self.stacked_xlstm_config is not None
+            return self.stacked_xlstm_config
         else:
             raise ValueError(f"Unknown model type: {model_type}")
 

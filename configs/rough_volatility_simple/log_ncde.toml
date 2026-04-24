@@ -25,6 +25,8 @@ evolving_out = true
 early_stopping_patience = 15
 [solver_config]
 stepsize_controller = "pid"
+solver = "tsit5"       # tsit5, bosh3, dopri5, dopri8, heun, euler
+adjoint = "recursive_checkpoint"  # recursive_checkpoint, direct
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4

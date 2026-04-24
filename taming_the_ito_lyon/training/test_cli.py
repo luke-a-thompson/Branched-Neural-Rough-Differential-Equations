@@ -27,12 +27,6 @@ def _resolve_run_dir_paths(run_dir: str) -> tuple[str, str]:
     return config_path, checkpoint_path
 
 
-def _metrics_name_for_seed(seed: int, base_seed: int, multiple: bool) -> str:
-    if multiple or seed != base_seed:
-        return f"test_metrics_seed_{seed}.json"
-    return "test_metrics.json"
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run the test epoch for a saved run directory"
@@ -92,18 +86,19 @@ def main() -> None:
 
     assert seeds is not None
     config_path, checkpoint_path = _resolve_run_dir_paths(args.run_dir)
+    metrics_path = os.path.join(args.run_dir, "test_metrics.json")
+    if os.path.exists(metrics_path):
+        os.remove(metrics_path)
     base_config = load_toml_config(config_path)
-    base_seed = int(base_config.experiment_config.seed)
-    multiple = len(seeds) > 1
     for seed in seeds:
         config = base_config.model_copy(deep=True)
         config.experiment_config.seed = int(seed)
-        metrics_name = _metrics_name_for_seed(seed, base_seed, multiple)
         run_test(
             config=config,
             checkpoint_path=checkpoint_path,
             run_dir=args.run_dir,
-            metrics_name=metrics_name,
+            metrics_name="test_metrics.json",
+            metrics_seed=int(seed),
         )
 
 

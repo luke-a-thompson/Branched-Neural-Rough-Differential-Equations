@@ -88,28 +88,16 @@ def _extract_training_time(metrics: dict[str, object]) -> float | None:
 
 
 def _estimate_training_time_to_best(metrics: dict[str, object]) -> float | None:
-    total_time = _extract_training_time(metrics)
-    if total_time is None:
+    timings = metrics.get("timings")
+    if not isinstance(timings, dict):
         return None
-    run_meta = metrics.get("run")
-    if not isinstance(run_meta, dict):
-        return None
-    total_epochs_obj = run_meta.get("total_epochs")
-    best_epoch_obj = run_meta.get("best_epoch")
-    if not isinstance(total_epochs_obj, (int, float)) or not isinstance(
-        best_epoch_obj, (int, float)
-    ):
-        return None
-    total_epochs = int(total_epochs_obj)
-    best_epoch = int(best_epoch_obj)
-    if total_epochs <= 0:
-        return None
-    time_per_epoch = float(total_time) / float(total_epochs)
-    return time_per_epoch * float(best_epoch + 1)
+    time_to_best = timings.get("time_to_best_epoch_s")
+    return float(time_to_best) if isinstance(time_to_best, (int, float)) else None
 
 
 def _extract_results_dict(metrics: dict[str, object]) -> dict[str, object]:
-    return _expect_dict(metrics, "test_results_dict")
+    test_section = _expect_dict(metrics, "test")
+    return _expect_dict(test_section, "results_dict")
 
 
 def _extract_ks_scores(
@@ -163,6 +151,36 @@ def _resolve_seed_metrics_paths(run_dir: Path, seeds: list[int]) -> list[Path]:
     return paths
 
 
+def extract_first_seed_payload(metrics: dict[str, object]) -> dict[str, object]:
+    """If metrics is a combined file with seed_metrics, return the lowest-key seed's payload."""
+    seed_metrics_obj = metrics.get("seed_metrics")
+    if not isinstance(seed_metrics_obj, dict) or not seed_metrics_obj:
+        return metrics
+    first_payload = next(
+        (
+            payload
+            for _, payload in sorted(seed_metrics_obj.items(), key=lambda item: int(item[0]))
+            if isinstance(payload, dict)
+        ),
+        None,
+    )
+    return first_payload if isinstance(first_payload, dict) else metrics
+
+
+def load_seed_payloads(run_dir: Path, seeds: list[int]) -> list[dict[str, object]]:
+    """Load per-seed metrics payloads, preferring a combined test_metrics.json if available."""
+    combined_path = run_dir / "test_metrics.json"
+    if combined_path.exists():
+        combined = _load_json(combined_path)
+        seed_metrics_obj = combined.get("seed_metrics")
+        if isinstance(seed_metrics_obj, dict):
+            maybe_payloads = [seed_metrics_obj.get(str(int(seed))) for seed in seeds]
+            if all(isinstance(payload, dict) for payload in maybe_payloads):
+                return [payload for payload in maybe_payloads if isinstance(payload, dict)]
+    metrics_paths = _resolve_seed_metrics_paths(run_dir, seeds)
+    return [_load_json(path) for path in metrics_paths]
+
+
 def _load_config(run_dir: Path) -> Config | None:
     config_path = run_dir / "config.toml"
     if not config_path.exists():
@@ -170,13 +188,15 @@ def _load_config(run_dir: Path) -> Config | None:
     return load_toml_config(str(config_path))
 
 
-def _mean_and_two_sigma(values: list[float]) -> tuple[float, float]:
+def _mean_and_std(values: list[float]) -> tuple[float, float | None]:
     if len(values) == 0:
         raise ValueError("Cannot compute statistics for empty list.")
     mean = float(sum(values) / float(len(values)))
-    variance = float(sum((v - mean) ** 2 for v in values) / float(len(values)))
+    if len(values) < 2:
+        return mean, None
+    variance = float(sum((v - mean) ** 2 for v in values) / float(len(values) - 1))
     sigma = float(math.sqrt(variance))
-    return mean, 2.0 * sigma
+    return mean, sigma
 
 
 def _aggregate_ks_scores(
@@ -197,9 +217,9 @@ def _aggregate_ks_scores(
             means.append(None)
             cis.append(None)
             continue
-        mean, two_sigma = _mean_and_two_sigma([float(v) for v in values])
+        mean, std = _mean_and_std([float(v) for v in values])
         means.append(mean)
-        cis.append(two_sigma)
+        cis.append(std)
     return means, cis
 
 
@@ -213,8 +233,8 @@ def _aggregate_scalar(
             values.append(float(value))
     if len(values) == 0:
         return None, None
-    mean, two_sigma = _mean_and_two_sigma(values)
-    return mean, two_sigma
+    mean, std = _mean_and_std(values)
+    return mean, std
 
 
 def build_rows(
@@ -229,15 +249,14 @@ def build_rows(
             metrics_path = _resolve_metrics_path(run_dir, metrics_file)
             if not metrics_path.exists():
                 raise FileNotFoundError(f"Missing metrics file at {metrics_path}")
-            metrics = _load_json(metrics_path)
+            metrics = extract_first_seed_payload(_load_json(metrics_path))
             results_dict = _extract_results_dict(metrics)
             ks_scores = _extract_ks_scores(results_dict, times)
             ito_level2_mmd2 = _extract_ito_level2_mmd2(results_dict)
             ito_level2_mmd2_ci = None
             ks_scores_ci = None
         else:
-            metrics_paths = _resolve_seed_metrics_paths(run_dir, seeds)
-            metrics_payloads = [_load_json(path) for path in metrics_paths]
+            metrics_payloads = load_seed_payloads(run_dir, seeds)
             results_dicts = [
                 _extract_results_dict(payload) for payload in metrics_payloads
             ]

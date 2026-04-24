@@ -1,44 +1,41 @@
 [experiment_config]
 model_type = "mnrde"
-dataset_name = "spd_wishart_diffusion"
+dataset_name = "synthetic_gbm"
+synthetic_gbm_dim = 1
 
 # Optimizer
 optimizer = "adamw"
-learning_rate = 1e-4
+learning_rate = 5e-4
 weight_decay = 0.000001
 max_grad_norm = 1.0
 
 # Training
-loss = "sigker_branched"
+loss = "mse"
 seed = 1
-batch_size = 16
-epochs = 100
+batch_size = 256
+epochs = 5
+early_stopping_patience = 5
 
 # Training mode
-training_mode = "unconditional"
+training_mode = "conditional"
 
-manifold = "spd"
+manifold = "euclidean"
 hidden_manifold = "euclidean"
 evolving_out = true
 
 [solver_config]
-stepsize_controller = "pid"
+stepsize_controller = "constant"
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
 [mnrde_config]
-
-# M-NRDE model parameters
 cde_state_dim = 32
 init_hidden_dim = 32
 vf_hidden_dim = 32
 initial_cond_mlp_depth = 2
 vf_mlp_depth = 2
-out_size = 6
-
-# Log-signature configuration
+out_size = 1
 signature_depth = 2
 signature_window_size = 32
-
-hopf_algebra = "mkw"
+hopf_algebra = "gl"

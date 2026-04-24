@@ -9,6 +9,7 @@ import jax.numpy as jnp
 from .logsignatures import compute_disjoint_signature_times
 
 
+
 def solve_cde_from_windowed_logsigs(
     ts: jax.Array,
     windowed_logsigs: jax.Array,
@@ -17,6 +18,7 @@ def solve_cde_from_windowed_logsigs(
     cde_func: Callable[[jax.typing.ArrayLike, jax.Array, None], jax.Array],
     y0: jax.Array,
     solver: diffrax.AbstractAdaptiveSolver,
+    adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
     stepsize_controller: diffrax.AbstractStepSizeController,
     dt0: float | None = None,
 ) -> jax.Array:
@@ -51,7 +53,7 @@ def solve_cde_from_windowed_logsigs(
 
     # This will evaluate the vector field many times over the course of the solve.
     if dt0 is None and isinstance(stepsize_controller, diffrax.ConstantStepSize):
-        dt0 = 0.01
+        dt0 = 0.05
 
     solution = diffrax.diffeqsolve(
         terms=term,
@@ -62,7 +64,8 @@ def solve_cde_from_windowed_logsigs(
         y0=y0,
         stepsize_controller=stepsize_controller,
         saveat=saveat,
-        adjoint=diffrax.RecursiveCheckpointAdjoint(),
+        adjoint=adjoint,
+        max_steps=9999,
     )
 
     assert solution.ys is not None
@@ -77,6 +80,7 @@ def solve_cde_from_windowed_logsigs_piecewise(
     cde_func: Callable[[jax.typing.ArrayLike, jax.Array, None], jax.Array],
     y0: jax.Array,
     solver: diffrax.AbstractAdaptiveSolver,
+    adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
     stepsize_controller: diffrax.AbstractStepSizeController,
     dt0: float | None = None,
 ) -> jax.Array:
@@ -120,7 +124,7 @@ def solve_cde_from_windowed_logsigs_piecewise(
             y0=y,
             stepsize_controller=stepsize_controller,
             saveat=diffrax.SaveAt(ts=ts_window),
-            adjoint=diffrax.RecursiveCheckpointAdjoint(),
+            adjoint=adjoint,
         )
         assert solution.ys is not None
         out = out.at[i].set(solution.ys)

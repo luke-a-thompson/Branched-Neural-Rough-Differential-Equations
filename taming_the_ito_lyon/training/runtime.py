@@ -26,6 +26,8 @@ class ExperimentRuntime:
     mode: TrainingMode
     batch_size: int
     ts_full: jax.Array
+    effective_timesteps: int
+    target_timesteps: int
     input_path_dim: int
     output_head_dim: int
     train_loader: DataLoader
@@ -58,6 +60,56 @@ class ExperimentRuntime:
     results_gathering_fn: ResultsGatheringFn
 
 
+def _effective_timesteps_for_model(config: Config, timesteps: int) -> int:
+    """Trim disjoint-logsignature models to a whole number of windows."""
+    if config.experiment_config.model_type not in (
+        ModelType.LOG_NCDE,
+        ModelType.NRDE,
+        ModelType.MNRDE,
+    ):
+        return int(timesteps)
+
+    step = int(config.nn_config.signature_window_size)
+    remainder = (int(timesteps) - 1) % step
+    return int(timesteps) if remainder == 0 else int(timesteps) - remainder
+
+
+def trim_time_aligned_batch(
+    runtime: ExperimentRuntime,
+    control_values_b: jax.Array,
+    target_b: jax.Array,
+    gt_driver_b: jax.Array,
+) -> tuple[jax.Array, jax.Array, jax.Array]:
+    """Trim batch tensors to the runtime's effective time length when needed."""
+    trim_len = int(runtime.effective_timesteps)
+    if int(control_values_b.shape[1]) <= trim_len:
+        return control_values_b, target_b, gt_driver_b
+    return (
+        control_values_b[:, :trim_len, ...],
+        target_b[:, :trim_len, ...],
+        gt_driver_b[:, :trim_len, ...],
+    )
+
+
+def align_predictions_to_targets(
+    runtime: ExperimentRuntime,
+    preds: jax.Array,
+    target_b: jax.Array,
+) -> jax.Array:
+    """Resize multirate predictions onto the sparse target grid when required."""
+    if runtime.config.experiment_config.dataset_name != Datasets.PPG_DALIA:
+        return preds
+    if preds.ndim < 2 or target_b.ndim < 2:
+        return preds
+    if int(preds.shape[1]) == int(target_b.shape[1]):
+        return preds
+    return jax.image.resize(
+        preds,
+        shape=(int(preds.shape[0]), int(target_b.shape[1]), *preds.shape[2:]),
+        method="linear",
+    )
+
+
 def build_runtime(config: Config, loader_key: jax.Array) -> ExperimentRuntime:
     loss_label: str = str(config.experiment_config.loss.value)
     mode = config.experiment_config.training_mode
@@ -75,9 +127,16 @@ def build_runtime(config: Config, loader_key: jax.Array) -> ExperimentRuntime:
     shape_batch, _, _ = test_iterate(test_loader_state)
 
     batch_size, timesteps, input_channels = shape_batch["driver"].shape
+    target_timesteps = int(shape_batch["solution"].shape[1])
+    effective_timesteps = _effective_timesteps_for_model(config, int(timesteps))
     # `solution` may be either (B, T, C) or (B, T, 3, 3) depending on dataset.
     # Do not infer model output head size from this blindly.
-    ts_full = jnp.linspace(0.0, 1.0, timesteps, dtype=shape_batch["solution"].dtype)
+    ts_full = jnp.linspace(
+        0.0,
+        1.0,
+        effective_timesteps,
+        dtype=shape_batch["solution"].dtype,
+    )
 
     # For SO(3) rotation-matrix datasets with rotational-geodesic loss we train a
     # 6D head and Gram–Schmidt it into a (3,3) rotation matrix via SO3.from_6d.
@@ -129,7 +188,18 @@ def build_runtime(config: Config, loader_key: jax.Array) -> ExperimentRuntime:
 
     @eqx.filter_jit
     def predict_batch(control_values_b: jax.Array, model: Model) -> jax.Array:
-        return jax.vmap(model)(control_values_b)
+        preds = jax.vmap(model)(control_values_b)
+        if (
+            config.experiment_config.dataset_name == Datasets.PPG_DALIA
+            and preds.ndim >= 2
+            and int(preds.shape[1]) != int(target_timesteps)
+        ):
+            preds = jax.image.resize(
+                preds,
+                shape=(int(preds.shape[0]), int(target_timesteps), *preds.shape[2:]),
+                method="linear",
+            )
+        return preds
 
     results_gathering_fn = create_results_gathering_fn(config)
 
@@ -139,6 +209,8 @@ def build_runtime(config: Config, loader_key: jax.Array) -> ExperimentRuntime:
         mode=mode,
         batch_size=int(batch_size),
         ts_full=ts_full,
+        effective_timesteps=int(effective_timesteps),
+        target_timesteps=int(target_timesteps),
         input_path_dim=int(input_path_dim),
         output_head_dim=int(output_head_dim),
         train_loader=train_loader,

@@ -7,11 +7,15 @@ import optax
 from cyreal.loader import DataLoader, _LoaderState
 from tqdm.auto import tqdm
 
-from taming_the_ito_lyon.config.config_options import TrainingMode
+from taming_the_ito_lyon.config.config_options import Datasets, TrainingMode
 from taming_the_ito_lyon.models import Model
 from taming_the_ito_lyon.training.io import format_loss
 from taming_the_ito_lyon.training.results_gathering_fns import ResultsDict
-from taming_the_ito_lyon.training.runtime import ExperimentRuntime
+from taming_the_ito_lyon.training.runtime import (
+    ExperimentRuntime,
+    align_predictions_to_targets,
+    trim_time_aligned_batch,
+)
 
 
 def run_train_epoch(
@@ -51,10 +55,16 @@ def run_train_epoch(
         else:
             control_values_b = batch["driver"]
 
-        loss_value, model, opt_state = train_step(
+        control_values_b, target_b, gt_driver_b = trim_time_aligned_batch(
+            runtime,
             control_values_b,
             batch["solution"],
             batch["driver"],
+        )
+        loss_value, model, opt_state = train_step(
+            control_values_b,
+            target_b,
+            gt_driver_b,
             model,
             opt_state,
         )
@@ -120,10 +130,17 @@ def run_eval_epoch(
         else:
             control_values_b = batch["driver"]
 
+        control_values_b, target_b, gt_driver_b = trim_time_aligned_batch(
+            runtime,
+            control_values_b,
+            batch["solution"],
+            batch["driver"],
+        )
         # Single forward pass per batch; reuse preds for loss and metrics.
         preds = runtime.predict_batch(control_values_b, model)
+        preds = align_predictions_to_targets(runtime, preds, target_b)
         loss_value = runtime.loss_on_preds_fn(
-            preds, batch["solution"], control_values_b, batch["driver"]
+            preds, target_b, control_values_b, gt_driver_b
         )
         total_loss = total_loss + loss_value
 
@@ -138,7 +155,7 @@ def run_eval_epoch(
             )
 
         preds_batches.append(preds)
-        targets_batches.append(batch["solution"])
+        targets_batches.append(target_b)
         controls_batches.append(control_values_b)
 
     steps = max(1, int(loader.steps_per_epoch))
@@ -148,7 +165,9 @@ def run_eval_epoch(
     results_dict = runtime.results_gathering_fn(
         preds_batches,
         targets_batches,
-        controls_batches,
+        None
+        if runtime.config.experiment_config.dataset_name == Datasets.PPG_DALIA
+        else controls_batches,
         epoch_idx,
         runtime.config.experiment_config.model_type.value,
         n_plot=min(8, int(runtime.batch_size)),
