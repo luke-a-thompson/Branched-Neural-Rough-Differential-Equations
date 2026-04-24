@@ -77,6 +77,11 @@ class ManifoldType(StrEnum):
     SPD = "spd"
 
 
+class HiddenStateMode(StrEnum):
+    EUCLIDEAN = "euclidean"
+    PROBLEM_MANIFOLD = "problem_manifold"
+
+
 class ControlInterpolationType(StrEnum):
     HERMITE_CUBIC = "hermite_cubic"
     LINEAR = "linear"

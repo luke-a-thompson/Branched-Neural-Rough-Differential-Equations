@@ -27,7 +27,6 @@ training_mode = "conditional"
 # unconditional_hurst = 0.1          # used for "fbm"/"rl"
 
 manifold = "so3"
-hidden_manifold = "euclidean"
 evolving_out = true
 
 [solver_config]

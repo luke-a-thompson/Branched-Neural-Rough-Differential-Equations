@@ -19,7 +19,6 @@ training_mode = "unconditional"
 # Unconditional generation samples a Brownian motion with this many channels.
 
 manifold = "euclidean"
-hidden_manifold = "euclidean"
 evolving_out = true
 
 [solver_config]

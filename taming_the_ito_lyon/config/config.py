@@ -17,6 +17,7 @@ from taming_the_ito_lyon.config.config_options import (
     ExtrapolationSchemeType,
     LossType,
     HopfAlgebraType,
+    HiddenStateMode,
     TrainingMode,
     ManifoldType,
     StepsizeControllerType,
@@ -155,8 +156,10 @@ class ExperimentConfig(BaseModel):
         return self
 
     manifold: ManifoldType = Field(description="Manifold to use")
-    hidden_manifold: ManifoldType = Field(
-        default=ManifoldType.EUCLIDEAN, description="Hidden manifold to use"
+    hidden_state_mode: HiddenStateMode = Field(
+        default=HiddenStateMode.EUCLIDEAN,
+        description="Hidden state space to use",
+        validation_alias=AliasChoices("hidden_state_mode", "hidden_manifold"),
     )
 
     evolving_out: bool = Field(description="Whether to evolve the output")

@@ -59,7 +59,6 @@ def test_mnrde_prepend_zero_basepoint_preserves_output_shape() -> None:
         signature_depth=2,
         signature_window_size=2,
         data_manifold=EuclideanSpace,
-        hidden_manifold=EuclideanSpace,
         hopf_algebra_type=HopfAlgebraType.SHUFFLE,
         solver=diffrax.Tsit5(),
         stepsize_controller=diffrax.ConstantStepSize(),

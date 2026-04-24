@@ -1,4 +1,12 @@
-from .config_options import ModelType, Optimizer, ExtrapolationSchemeType, Datasets, SolverType, AdjointType
+from .config_options import (
+    AdjointType,
+    Datasets,
+    ExtrapolationSchemeType,
+    HiddenStateMode,
+    ModelType,
+    Optimizer,
+    SolverType,
+)
 from .config import (
     Config,
     ExperimentConfig,
@@ -18,6 +26,7 @@ __all__ = [
     "ModelType",
     "Optimizer",
     "ExtrapolationSchemeType",
+    "HiddenStateMode",
     "Datasets",
     "Config",
     "ExperimentConfig",

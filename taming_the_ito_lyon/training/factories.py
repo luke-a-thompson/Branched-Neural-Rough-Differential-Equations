@@ -27,6 +27,7 @@ from taming_the_ito_lyon.config import (
 )
 from taming_the_ito_lyon.config.config_options import (
     AdjointType,
+    HiddenStateMode,
     HopfAlgebraType,
     LossType,
     ManifoldType,
@@ -200,8 +201,10 @@ def create_model(
     )
 
     manifold = create_manifold_from_type(config.experiment_config.manifold)
-    hidden_manifold = create_manifold_from_type(
-        config.experiment_config.hidden_manifold
+    hidden_manifold = (
+        EuclideanSpace
+        if config.experiment_config.hidden_state_mode == HiddenStateMode.EUCLIDEAN
+        else manifold
     )
     stepsize_controller = create_stepsize_controller(config)
     solver = create_solver(config)
@@ -277,7 +280,7 @@ def create_model(
                 signature_depth=config.nn_config.signature_depth,
                 signature_window_size=config.nn_config.signature_window_size,
                 data_manifold=manifold,
-                hidden_manifold=hidden_manifold,
+                hidden_state_mode=config.experiment_config.hidden_state_mode,
                 hopf_algebra_type=config.nn_config.hopf_algebra,
                 solver=solver,
                 adjoint=adjoint,

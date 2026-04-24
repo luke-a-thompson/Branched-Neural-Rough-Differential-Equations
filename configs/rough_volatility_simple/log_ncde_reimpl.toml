@@ -19,7 +19,6 @@ training_mode = "unconditional"
 # Unconditional generation always uses a single Brownian driver W (time is prepended).
 
 manifold = "euclidean"
-hidden_manifold = "euclidean"
 evolving_out = true
 
 [solver_config]

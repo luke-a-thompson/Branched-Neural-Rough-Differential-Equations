@@ -23,14 +23,14 @@ from stochastax.vector_field_lifts.mkw_lift import form_mkw_bracket_functions
 from stochastax.vector_field_lifts.vector_field_lift_types import (
     VectorFieldBracketFunctionLift,
 )
-from stochastax.manifolds import Manifold
+from stochastax.manifolds import EuclideanSpace, Manifold
 from stochastax.manifolds.spd import SPDManifold
 from .logsignatures import (
     compute_windowed_logsignatures_from_values,
 )
 from .extrapolation import ExtrapolationScheme
-from .logsig_cde_solve import solve_cde_from_windowed_logsigs_piecewise
-from taming_the_ito_lyon.config.config_options import HopfAlgebraType
+from .logsig_cde_solve import solve_cde_from_windowed_logsigs
+from taming_the_ito_lyon.config.config_options import HiddenStateMode, HopfAlgebraType
 
 
 def lipswish(x: jax.Array) -> jax.Array:
@@ -129,6 +129,7 @@ class MNDRE(eqx.Module):
     vf_lift: VectorFieldBracketFunctionLift = eqx.field(static=True)
     data_manifold: type[Manifold] = eqx.field(static=True)
     hidden_manifold: type[Manifold] = eqx.field(static=True)
+    hidden_state_mode: HiddenStateMode = eqx.field(static=True)
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     signature_depth: int = eqx.field(static=True)
     signature_window_size: int = eqx.field(static=True)
@@ -156,8 +157,8 @@ class MNDRE(eqx.Module):
         *,
         key: jax.Array,
         data_manifold: type[Manifold],
-        hidden_manifold: type[Manifold],
         hopf_algebra_type: HopfAlgebraType,
+        hidden_state_mode: HiddenStateMode = HiddenStateMode.EUCLIDEAN,
         solver: diffrax.AbstractAdaptiveSolver = diffrax.Tsit5(),
         adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         stepsize_controller: diffrax.AbstractStepSizeController,
@@ -180,7 +181,12 @@ class MNDRE(eqx.Module):
 
         # Rough paths
         self.data_manifold = data_manifold
-        self.hidden_manifold = hidden_manifold
+        self.hidden_state_mode = hidden_state_mode
+        self.hidden_manifold = (
+            EuclideanSpace
+            if hidden_state_mode == HiddenStateMode.EUCLIDEAN
+            else data_manifold
+        )
         self.signature_depth = signature_depth
         self.signature_window_size = signature_window_size
         self.brownian_channels = (
@@ -310,7 +316,7 @@ class MNDRE(eqx.Module):
             ),
             brownian_corr=self.brownian_corr,
         )
-        return solve_cde_from_windowed_logsigs_piecewise(
+        return solve_cde_from_windowed_logsigs(
             ts,
             logsigs,
             signature_window_size=int(self.signature_window_size),

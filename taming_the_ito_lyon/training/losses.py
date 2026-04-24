@@ -7,17 +7,6 @@ import jax.numpy as jnp
 from stochastax.manifolds.spd import SPDManifold
 
 from taming_the_ito_lyon.config.config import Config
-from taming_the_ito_lyon.config.config_options import ModelType
-
-
-def _maybe_drop_initial_step(
-    config: Config,
-    pred: jax.Array,
-    target: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-    if config.experiment_config.model_type != ModelType.M_ODE or pred.shape[1] <= 1:
-        return pred, target
-    return pred[:, 1:], target[:, 1:]
 
 
 def _maybe_wrap_extrapolation(
@@ -46,46 +35,12 @@ def mse_loss(
     return jnp.mean((pred - target) ** 2)
 
 
-def initial_step_log_eigenvalue_loss(
-    pred: jax.Array,
-    target: jax.Array,
-) -> jax.Array:
-    """Explicitly penalize mismatch at the first step via SPD log-eigenvalue error."""
-    assert pred.shape == target.shape, (
-        f"pred and target must have the same shape, got {pred.shape} and {target.shape}"
-    )
-    if pred.ndim < 2:
-        raise ValueError(
-            f"Expected batched time series with shape (B, T, ...), got {pred.shape}"
-        )
-    if int(pred.shape[1]) < 1:
-        raise ValueError("Expected at least one time step for initial-step loss.")
-    if pred.shape[-1] == 6:
-        pred = SPDManifold.unvech(pred)
-        target = SPDManifold.unvech(target)
-    if pred.shape[-2:] != (3, 3):
-        raise ValueError(
-            "Expected SPD paths shaped (B, T, 6) or (B, T, 3, 3) for log-eigenvalue loss, "
-            f"got {pred.shape}."
-        )
-
-    pred0 = pred[:, 0, :, :]
-    target0 = target[:, 0, :, :]
-    pred_eigs = jnp.linalg.eigvalsh(pred0)
-    target_eigs = jnp.linalg.eigvalsh(target0)
-    eps = jnp.asarray(1e-8, dtype=pred_eigs.dtype)
-    pred_log_eigs = jnp.log(jnp.clip(pred_eigs, min=eps))
-    target_log_eigs = jnp.log(jnp.clip(target_eigs, min=eps))
-    return jnp.mean((pred_log_eigs - target_log_eigs) ** 2)
-
-
 def frobenius_loss(
     config: Config,
 ) -> Callable[[jax.Array, jax.Array], jax.Array]:
     """Frobenius loss between predicted and target rotation matrices."""
 
     def loss(pred: jax.Array, target: jax.Array) -> jax.Array:
-        pred, target = _maybe_drop_initial_step(config, pred, target)
         return jnp.mean(jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1)))
 
     return _maybe_wrap_extrapolation(loss, config)
@@ -97,7 +52,6 @@ def rotational_geodesic_loss(
     """Rotational Geodesic Error: RGE(R1, R2) = 2 * arcsin(||R2 - R1||_F / (2√2))."""
 
     def loss(pred: jax.Array, target: jax.Array) -> jax.Array:
-        pred, target = _maybe_drop_initial_step(config, pred, target)
         assert pred.shape == target.shape, (
             f"pred and target must have the same shape, got {pred.shape} and {target.shape}"
         )
@@ -107,7 +61,7 @@ def rotational_geodesic_loss(
         # arcsin derivative singularity at 1.0 (inf gradients, unstable early training).
         ratio = jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1)) / (2.0 * jnp.sqrt(2.0))
         eps = jnp.asarray(1e-5, dtype=ratio.dtype)
-        rge_rad = 2.0 * jnp.arcsin(jnp.clip(ratio, a_min=0.0, a_max=1.0 - eps))
+        rge_rad = 2.0 * jnp.arcsin(jnp.clip(ratio, min=0.0, max=1.0 - eps))
         return jnp.mean(rge_rad * (180.0 / jnp.pi))
 
     return _maybe_wrap_extrapolation(loss, config)

@@ -18,7 +18,6 @@ epochs = 100
 training_mode = "unconditional"
 
 manifold = "euclidean"
-hidden_manifold = "euclidean"
 evolving_out = true
 
 [solver_config]

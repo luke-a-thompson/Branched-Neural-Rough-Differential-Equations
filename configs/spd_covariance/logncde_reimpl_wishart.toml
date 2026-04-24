@@ -19,7 +19,6 @@ early_stopping_patience = 3
 training_mode = "unconditional"
 
 manifold = "spd"
-hidden_manifold = "euclidean"
 evolving_out = true
 
 [solver_config]
