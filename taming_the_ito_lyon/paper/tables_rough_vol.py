@@ -159,7 +159,9 @@ def extract_first_seed_payload(metrics: dict[str, object]) -> dict[str, object]:
     first_payload = next(
         (
             payload
-            for _, payload in sorted(seed_metrics_obj.items(), key=lambda item: int(item[0]))
+            for _, payload in sorted(
+                seed_metrics_obj.items(), key=lambda item: int(item[0])
+            )
             if isinstance(payload, dict)
         ),
         None,
@@ -176,7 +178,9 @@ def load_seed_payloads(run_dir: Path, seeds: list[int]) -> list[dict[str, object
         if isinstance(seed_metrics_obj, dict):
             maybe_payloads = [seed_metrics_obj.get(str(int(seed))) for seed in seeds]
             if all(isinstance(payload, dict) for payload in maybe_payloads):
-                return [payload for payload in maybe_payloads if isinstance(payload, dict)]
+                return [
+                    payload for payload in maybe_payloads if isinstance(payload, dict)
+                ]
     metrics_paths = _resolve_seed_metrics_paths(run_dir, seeds)
     return [_load_json(path) for path in metrics_paths]
 

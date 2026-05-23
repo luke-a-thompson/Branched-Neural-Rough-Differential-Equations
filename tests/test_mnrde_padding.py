@@ -15,7 +15,7 @@ from taming_the_ito_lyon.models import MNDRE
 def test_mnrde_zero_basepoint_padding_uses_uniform_synthetic_grid() -> None:
     model = MNDRE(
         input_path_dim=3,
-        cde_state_dim=8,
+        initial_state_param_dim=8,
         output_path_dim=2,
         initial_hidden_dim=8,
         initial_cond_mlp_depth=2,

@@ -1,29 +1,32 @@
 from __future__ import annotations
+
 import tomllib
+
 from pydantic import (
-    BaseModel,
     AliasChoices,
+    BaseModel,
     ConfigDict,
     Field,
-    PositiveInt,
     PositiveFloat,
-    model_validator,
+    PositiveInt,
     field_validator,
+    model_validator,
 )
+
 from taming_the_ito_lyon.config.config_options import (
-    Optimizer,
-    ModelType,
+    AdjointType,
+    ControlInterpolationType,
     Datasets,
     ExtrapolationSchemeType,
-    LossType,
-    HopfAlgebraType,
     HiddenStateMode,
-    TrainingMode,
+    HopfAlgebraType,
+    LossType,
     ManifoldType,
-    StepsizeControllerType,
-    ControlInterpolationType,
+    ModelType,
+    Optimizer,
     SolverType,
-    AdjointType,
+    StepsizeControllerType,
+    TrainingMode,
 )
 
 
@@ -129,9 +132,7 @@ class ExperimentConfig(BaseModel):
     # Training
     loss: LossType = Field(description="Loss function to use")
     seed: PositiveInt = Field(description="PRNG seed")
-    batch_size: PositiveInt = Field(
-        multiple_of=8, description="Batch size; divisible by 8"
-    )
+    batch_size: PositiveInt = Field(description="Batch size")
     epochs: PositiveInt = Field(description="Number of epochs")
     early_stopping_patience: PositiveInt = Field(
         default=25, description="Epochs with no val improvement before stopping"
@@ -227,6 +228,13 @@ class SolverConfig(BaseModel):
     dtmin: PositiveFloat = Field(description="Minimum time step for solver")
     dt0: PositiveFloat = Field(default=0.01, description="Initial step size for solver")
 
+    @field_validator("solver", mode="before")
+    @classmethod
+    def coerce_solver_name(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip() == "CG2":
+            return SolverType.CG2
+        return v
+
     @model_validator(mode="after")
     def validate_solver_tolerances(self) -> SolverConfig:
         if not (0.0 < float(self.rtol) < 1.0):
@@ -308,13 +316,27 @@ class MNRDEConfig(BaseModel):
     vf_mlp_depth: PositiveInt = Field(
         description="Vector field MLP depth (number of hidden layers)"
     )
-    cde_state_dim: PositiveInt = Field(description="CDE hidden state dimension")
+    cde_state_dim: PositiveInt | None = Field(
+        default=None,
+        description="Euclidean hidden state dimension for M-NRDE",
+    )
+    initial_state_param_dim: PositiveInt | None = Field(
+        default=None,
+        description="Initial-state parameter dimension for problem-manifold M-NRDE",
+    )
     out_size: PositiveInt = Field(description="Output channels predicted by readout")
 
     # Signature config
     signature_depth: PositiveInt = Field(le=5, description="Signature depth")
     signature_window_size: PositiveInt = Field(
         default=1, description="Data steps per log-signature window"
+    )
+    virtual_brownian_refinement: PositiveInt = Field(
+        default=1,
+        description=(
+            "Deprecated compatibility option. Geometric M-NRDE now samples "
+            "VirtualBrownianTree controls on the data grid."
+        ),
     )
 
     # Hopf algebra for M-NRDE
@@ -492,6 +514,36 @@ class Config(BaseModel):
         num_provided = sum(c is not None for c in all_configs)
         if num_provided > 1:
             raise ValueError("Only one model config section should be provided")
+
+        if self.experiment_config.hidden_state_mode == HiddenStateMode.PROBLEM_MANIFOLD:
+            if model_type != ModelType.MNRDE:
+                raise ValueError(
+                    "hidden_state_mode='problem_manifold' is currently supported "
+                    "only for model_type='mnrde'."
+                )
+            assert self.mnrde_config is not None
+            if self.mnrde_config.initial_state_param_dim is None:
+                raise ValueError(
+                    "hidden_state_mode='problem_manifold' requires "
+                    "mnrde_config.initial_state_param_dim."
+                )
+            if self.mnrde_config.cde_state_dim is not None:
+                raise ValueError(
+                    "Use mnrde_config.initial_state_param_dim instead of "
+                    "cde_state_dim when hidden_state_mode='problem_manifold'."
+                )
+            if self.solver_config.solver not in (SolverType.CFEES25,):
+                raise ValueError(
+                    "hidden_state_mode='problem_manifold' requires solver to be "
+                    "'cfees25'."
+                )
+        elif model_type == ModelType.MNRDE:
+            assert self.mnrde_config is not None
+            if self.mnrde_config.cde_state_dim is None:
+                raise ValueError(
+                    "mnrde_config.cde_state_dim is required when "
+                    "hidden_state_mode='euclidean'."
+                )
 
         return self
 

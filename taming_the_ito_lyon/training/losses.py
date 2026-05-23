@@ -59,7 +59,9 @@ def rotational_geodesic_loss(
         # Closed-form RGE assumes valid rotations; simulator drift + float error can push
         # the arcsin argument marginally outside [-1, 1]. Clip below 1 to also avoid the
         # arcsin derivative singularity at 1.0 (inf gradients, unstable early training).
-        ratio = jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1)) / (2.0 * jnp.sqrt(2.0))
+        ratio = jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1)) / (
+            2.0 * jnp.sqrt(2.0)
+        )
         eps = jnp.asarray(1e-5, dtype=ratio.dtype)
         rge_rad = 2.0 * jnp.arcsin(jnp.clip(ratio, min=0.0, max=1.0 - eps))
         return jnp.mean(rge_rad * (180.0 / jnp.pi))
@@ -129,7 +131,9 @@ def signature_kernel_score(
             path = _to_euclidean(path)
             if anchor_at_start:
                 path = path - path[:1]
-            aug = jnp.concatenate([ts_col, path], axis=-1) if use_time else path  # (T, ambient_dim)
+            aug = (
+                jnp.concatenate([ts_col, path], axis=-1) if use_time else path
+            )  # (T, ambient_dim)
             if prepend_zero_basepoint:
                 # Signatures depend on increments, so absolute level is invisible.
                 # Prepending a zero basepoint makes the first increment equal to x0.
@@ -292,7 +296,9 @@ def branched_signature_kernel_score(
                 return cov
             return jnp.concatenate([jnp.zeros((1, d, d), dtype=dtype), cov], axis=0)
 
-        def _phi(x_path: jax.Array, w_path: jax.Array | None, cov_density: jax.Array | None) -> jax.Array:
+        def _phi(
+            x_path: jax.Array, w_path: jax.Array | None, cov_density: jax.Array | None
+        ) -> jax.Array:
             # cov_density=None => estimate QV from x increments; else use provided density.
             if cov_density is None:
                 inc = jnp.diff(x_path, axis=0)
@@ -301,18 +307,26 @@ def branched_signature_kernel_score(
                 dqv = cov_density[:-1] * dt[:, None, None]
             cov_inc = _embed_cov(dqv, x_path.dtype)
             path = _augment(x_path, w_path)
-            return compute_sig(path, depth_i, hopf, "full", cov_increments=cov_inc).log().flatten()
+            return (
+                compute_sig(path, depth_i, hopf, "full", cov_increments=cov_inc)
+                .log()
+                .flatten()
+            )
 
         if use_w:
             assert pred_w_ is not None and target_w_ is not None
             phi_pred = jax.vmap(lambda x, w: _phi(x, w, None))(pred_x_btc, pred_w_)
-            phi_target = jax.vmap(lambda x, w: _phi(x, w, None))(target_x_btc, target_w_)
+            phi_target = jax.vmap(lambda x, w: _phi(x, w, None))(
+                target_x_btc, target_w_
+            )
         else:
             phi_pred = jax.vmap(lambda x: _phi(x, None, None))(pred_x_btc)
             if target_cov is None:
                 phi_target = jax.vmap(lambda x: _phi(x, None, None))(target_x_btc)
             else:
-                phi_target = jax.vmap(lambda x, cov: _phi(x, None, cov))(target_x_btc, target_cov)
+                phi_target = jax.vmap(lambda x, cov: _phi(x, None, cov))(
+                    target_x_btc, target_cov
+                )
 
         # For dot-product kernels, MMD^2 reduces to the squared distance between mean
         # embeddings — avoids the O(B^2) Gram matrix.

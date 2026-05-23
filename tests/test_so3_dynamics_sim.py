@@ -39,6 +39,8 @@ def test_so3_dataset_keeps_flat_driver_for_matrix_specific_paths() -> None:
     so3_sg_config = load_toml_config("configs/sg_so3_sim/nrde.toml").model_copy(
         deep=True
     )
-    so3_sg_config.experiment_config.extrapolation_scheme = ExtrapolationSchemeType.SO3_SG
+    so3_sg_config.experiment_config.extrapolation_scheme = (
+        ExtrapolationSchemeType.SO3_SG
+    )
     so3_sg_dataset = SO3DynamicsSim(so3_sg_config, "train")
     assert so3_sg_dataset[0]["driver"].shape == (21, 9)

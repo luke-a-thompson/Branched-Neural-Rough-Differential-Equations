@@ -224,16 +224,12 @@ def _make_branched_ito_signature_moment_gap_metrics(
         pred_lvl1, pred_lvl2, pred_chain = jax.vmap(_signature_stats)(pred)
         target_lvl1, target_lvl2, target_chain = jax.vmap(_signature_stats)(target)
 
-        pred_lvl1_mean = jnp.mean(pred_lvl1, axis=0)
-        target_lvl1_mean = jnp.mean(target_lvl1, axis=0)
-        pred_lvl2_mean = jnp.mean(pred_lvl2, axis=0)
-        target_lvl2_mean = jnp.mean(target_lvl2, axis=0)
-        pred_chain_mean = jnp.mean(pred_chain, axis=0)
-        target_chain_mean = jnp.mean(target_chain, axis=0)
+        def _gap(a: jax.Array, b: jax.Array) -> float:
+            return float(jnp.linalg.norm(jnp.mean(a, axis=0) - jnp.mean(b, axis=0)))
 
-        lvl1_gap = float(jnp.linalg.norm(pred_lvl1_mean - target_lvl1_mean))
-        chain_gap = float(jnp.linalg.norm(pred_chain_mean - target_chain_mean))
-        lvl2_full_gap = float(jnp.linalg.norm(pred_lvl2_mean - target_lvl2_mean))
+        lvl1_gap = _gap(pred_lvl1, target_lvl1)
+        chain_gap = _gap(pred_chain, target_chain)
+        lvl2_full_gap = _gap(pred_lvl2, target_lvl2)
 
         return {
             "branched_sig_gap_lvl1_l2": lvl1_gap,
@@ -244,8 +240,8 @@ def _make_branched_ito_signature_moment_gap_metrics(
     return _branched_ito_signature_moment_gap_metrics
 
 
-_branched_ito_signature_moment_gap_metrics = _make_branched_ito_signature_moment_gap_metrics(
-    depth=2
+_branched_ito_signature_moment_gap_metrics = (
+    _make_branched_ito_signature_moment_gap_metrics(depth=2)
 )
 
 
@@ -364,17 +360,6 @@ def get_ppg_dalia_results(
     already-computed validation/test loss instead of injecting an auxiliary
     dataset-specific metric.
     """
-    del (
-        preds,
-        targets,
-        controls,
-        epoch_idx,
-        model_name,
-        times_to_save,
-        n_plot,
-        save_plot_every,
-        config,
-    )
     return ResultsDict(eval_metric=None, results_times=[], results=[])
 
 
@@ -389,17 +374,6 @@ def get_generic_path_results(
     save_plot_every: int = 1,
     config: Config | None = None,
 ) -> ResultsDict:
-    del (
-        preds,
-        targets,
-        controls,
-        epoch_idx,
-        model_name,
-        times_to_save,
-        n_plot,
-        save_plot_every,
-        config,
-    )
     return ResultsDict(eval_metric=None, results_times=[], results=[])
 
 
@@ -417,7 +391,9 @@ def get_rough_volatility_results(
     preds_batches = preds if isinstance(preds, list) else [preds]
     targets_batches = targets if isinstance(targets, list) else [targets]
     controls_batches = (
-        None if controls is None else (controls if isinstance(controls, list) else [controls])
+        None
+        if controls is None
+        else (controls if isinstance(controls, list) else [controls])
     )
     preds0 = np.array(jax.device_get(preds_batches[0]))
     targets0 = np.array(jax.device_get(targets_batches[0]))
@@ -481,7 +457,11 @@ def get_rough_volatility_results(
             raise ValueError(
                 f"Expected model controls shaped (B, T, C), got {control_np0.shape}"
             )
-        w_model = control_np0[:, :, 1] if int(control_np0.shape[-1]) >= 2 else control_np0[:, :, 0]
+        w_model = (
+            control_np0[:, :, 1]
+            if int(control_np0.shape[-1]) >= 2
+            else control_np0[:, :, 0]
+        )
         data = np.load(config.experiment_config.dataset_name.value)
         w_gt_raw = np.asarray(data["driver"], dtype=np.float32)
         x_gt = np.asarray(data["log_price"], dtype=np.float32)
@@ -677,12 +657,16 @@ def get_spd_covariance_results(
         max_paths = int(max_paths_env) if max_paths_env.isdigit() else None
         save_spd_covariance_eigenvalue_fan_single_plot(
             paths=targets_np,
-            out_file=os.path.join(fan_out_dir, f"fan_targets_epoch_{epoch_number:05d}.png"),
+            out_file=os.path.join(
+                fan_out_dir, f"fan_targets_epoch_{epoch_number:05d}.png"
+            ),
             max_paths=max_paths,
         )
         save_spd_covariance_eigenvalue_fan_single_plot(
             paths=preds_np,
-            out_file=os.path.join(fan_out_dir, f"fan_preds_epoch_{epoch_number:05d}.png"),
+            out_file=os.path.join(
+                fan_out_dir, f"fan_preds_epoch_{epoch_number:05d}.png"
+            ),
             max_paths=max_paths,
         )
 

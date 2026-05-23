@@ -17,7 +17,9 @@ from .logsignatures import (
     compute_windowed_logsignatures_from_values,
 )
 from .extrapolation import ExtrapolationScheme
-from .logsig_cde_solve import solve_cde_from_windowed_logsigs
+from .logsig_cde_solve import (
+    solve_cde_from_windowed_logsigs,
+)
 
 
 class NRDEFunc(eqx.Module):
@@ -169,7 +171,9 @@ class NeuralRDE(eqx.Module):
         if not self.prepend_zero_basepoint:
             return ts, control_values
 
-        zero0 = jnp.zeros((1, int(control_values.shape[-1])), dtype=control_values.dtype)
+        zero0 = jnp.zeros(
+            (1, int(control_values.shape[-1])), dtype=control_values.dtype
+        )
         ts_aug = jnp.concatenate([ts[:1], ts], axis=0)
         values_aug = jnp.concatenate([zero0, control_values], axis=0)
 
@@ -213,7 +217,7 @@ class NeuralRDE(eqx.Module):
             self.signature_depth,
             self.signature_window_size,
         )  # (num_windows, logsig_size)
-        return solve_cde_from_windowed_logsigs(
+        ys, _ = solve_cde_from_windowed_logsigs(
             ts,
             logsigs,
             signature_window_size=int(self.signature_window_size),
@@ -224,6 +228,34 @@ class NeuralRDE(eqx.Module):
             stepsize_controller=self.stepsize_controller,
             dt0=self.dt0,
         )
+        return ys
+
+    def _integration_steps_with_values(
+        self,
+        ts: jax.Array,
+        control_values: jax.Array,
+    ) -> jax.Array:
+        x0 = control_values[0]
+        h0 = self.initial(x0)
+
+        logsigs = compute_windowed_logsignatures_from_values(
+            control_values,
+            self.shuffle_hopf_algebra,
+            self.signature_depth,
+            self.signature_window_size,
+        )
+        _, stats = solve_cde_from_windowed_logsigs(
+            ts,
+            logsigs,
+            signature_window_size=int(self.signature_window_size),
+            cde_func=self.cde_func,
+            y0=h0,
+            solver=self.solver,
+            adjoint=self.adjoint,
+            stepsize_controller=self.stepsize_controller,
+            dt0=self.dt0,
+        )
+        return jnp.asarray(stats["num_steps"], dtype=jnp.float32)
 
     def _forward_with_control(
         self,
@@ -284,3 +316,17 @@ class NeuralRDE(eqx.Module):
             return self._apply_readout(hidden_over_time)
         else:
             return self._apply_readout(hidden_over_time[-1:])[0]
+
+    def integration_steps(self, control_values: jax.Array) -> jax.Array:
+        length = control_values.shape[0]
+        ts = jnp.linspace(0.0, 1.0, length, dtype=control_values.dtype)
+        if self.extrapolation_scheme is not None:
+            assert self.n_recon is not None
+            control, _ = self.extrapolation_scheme.create_control(
+                ts, control_values, self.n_recon
+            )
+            control_values = jax.vmap(control.evaluate)(ts)
+        ts_aug, control_values_aug = self._maybe_prepend_zero_basepoint(
+            ts, control_values
+        )
+        return self._integration_steps_with_values(ts_aug, control_values_aug)

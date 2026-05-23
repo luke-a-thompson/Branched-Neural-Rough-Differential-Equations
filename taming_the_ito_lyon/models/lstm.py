@@ -112,9 +112,7 @@ class LSTM(eqx.Module):
             key=readout_key,
         )
 
-    def _initial_states(
-        self, x0: jax.Array
-    ) -> tuple[tuple[jax.Array, jax.Array], ...]:
+    def _initial_states(self, x0: jax.Array) -> tuple[tuple[jax.Array, jax.Array], ...]:
         h0 = self.initial_cond_mlp(x0).reshape(self.num_layers, self.hidden_size)
         h0 = jax.vmap(self.hidden_manifold.retract)(h0)
         c0 = jnp.zeros_like(h0)

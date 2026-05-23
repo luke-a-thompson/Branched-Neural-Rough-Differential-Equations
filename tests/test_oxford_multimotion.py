@@ -32,7 +32,9 @@ def test_oxford_dataset_uses_lie_algebra_driver_for_extrapolation_models() -> No
     assert jnp.allclose(reconstructed, sample["solution"][0], atol=1e-5)
 
 
-def test_oxford_runtime_uses_time_augmented_lie_driver_for_extrapolation_models() -> None:
+def test_oxford_runtime_uses_time_augmented_lie_driver_for_extrapolation_models() -> (
+    None
+):
     config = load_toml_config("configs/sg_so3_sim/nrde.toml").model_copy(deep=True)
     config.experiment_config.dataset_name = Datasets.OXFORD_MULTIMOTION_STATIC
     config.experiment_config.model_type = ModelType.NRDE

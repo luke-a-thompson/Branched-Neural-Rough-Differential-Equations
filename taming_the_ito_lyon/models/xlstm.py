@@ -205,7 +205,9 @@ def mlstm_forward(
 
     log_fg_act = jax.nn.log_sigmoid(fg_pre_act)
     log_fg_cumsum = jnp.pad(jnp.cumsum(log_fg_act, axis=-1), ((0, 0), (1, 0)))
-    rep_log_fg_cumsum = jnp.repeat(log_fg_cumsum[..., None], repeats=length + 1, axis=-1)
+    rep_log_fg_cumsum = jnp.repeat(
+        log_fg_cumsum[..., None], repeats=length + 1, axis=-1
+    )
     transpose_diff = rep_log_fg_cumsum - jnp.swapaxes(rep_log_fg_cumsum, 1, 2)
     log_fg = jnp.where(mask[None, :, :], transpose_diff[:, 1:, 1:], -jnp.inf)
 
@@ -238,9 +240,8 @@ def mlstm_step(
     ig_act = jnp.exp(ig_pre_act - next_m_state)
 
     k_scaled = k / math.sqrt(d_head)
-    next_c_state = (
-        fg_act[:, None, None] * c_state
-        + ig_act[:, None, None] * jnp.einsum("hi,hj->hij", k_scaled, v)
+    next_c_state = fg_act[:, None, None] * c_state + ig_act[:, None, None] * jnp.einsum(
+        "hi,hj->hij", k_scaled, v
     )
     next_n_state = fg_act[:, None] * n_state + ig_act[:, None] * k_scaled
 
@@ -306,17 +307,28 @@ class XLSTMLayer(eqx.Module):
             n_layers=args.n_layers,
         )
 
-        self.conv_kernel = small_init(conv_key, (args.d_inner, args.d_conv), args.d_inner)
+        self.conv_kernel = small_init(
+            conv_key, (args.d_inner, args.d_conv), args.d_inner
+        )
         self.conv_bias = jnp.zeros(args.d_inner) if args.use_conv_bias else None
 
         self.wq = HeadLinear(
-            wq_key, in_features=args.d_inner, n_heads=args.n_heads, use_bias=args.use_qkv_bias
+            wq_key,
+            in_features=args.d_inner,
+            n_heads=args.n_heads,
+            use_bias=args.use_qkv_bias,
         )
         self.wk = HeadLinear(
-            wk_key, in_features=args.d_inner, n_heads=args.n_heads, use_bias=args.use_qkv_bias
+            wk_key,
+            in_features=args.d_inner,
+            n_heads=args.n_heads,
+            use_bias=args.use_qkv_bias,
         )
         self.wv = HeadLinear(
-            wv_key, in_features=args.d_inner, n_heads=args.n_heads, use_bias=args.use_qkv_bias
+            wv_key,
+            in_features=args.d_inner,
+            n_heads=args.n_heads,
+            use_bias=args.use_qkv_bias,
         )
 
         self.igate = set_linear_weight(
@@ -377,9 +389,9 @@ class XLSTMLayer(eqx.Module):
         )
 
         conv_input = jnp.pad(x_proj, ((self.args.d_conv - 1, 0), (0, 0))).T
-        xc = jax.vmap(lambda signal, kernel: jnp.convolve(signal, kernel, mode="valid"))(
-            conv_input, self.conv_kernel
-        ).T
+        xc = jax.vmap(
+            lambda signal, kernel: jnp.convolve(signal, kernel, mode="valid")
+        )(conv_input, self.conv_kernel).T
         if self.conv_bias is not None:
             xc = xc + self.conv_bias
         xc = jax.nn.silu(xc)

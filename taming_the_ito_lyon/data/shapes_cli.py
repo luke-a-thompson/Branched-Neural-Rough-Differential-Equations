@@ -93,7 +93,11 @@ def main(argv: list[str] | None = None) -> int:
         else:
             # Treat as folder name under ./data
             search_dirs = sorted(
-                [p for p in default_data_root.rglob("*") if p.is_dir() and p.name == target_str]
+                [
+                    p
+                    for p in default_data_root.rglob("*")
+                    if p.is_dir() and p.name == target_str
+                ]
             )
             if not search_dirs:
                 # Also try direct child under ./data for convenience

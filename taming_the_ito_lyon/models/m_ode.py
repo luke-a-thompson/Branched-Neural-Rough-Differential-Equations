@@ -129,9 +129,9 @@ class ManifoldNeuralODE(eqx.Module):
         canonical_basis = jnp.eye(ambient_dim, dtype=anchor.dtype).reshape(
             (ambient_dim,) + anchor.shape
         )
-        tangent_basis = jax.vmap(
-            lambda v: self.manifold.project_to_tangent(anchor, v)
-        )(canonical_basis)
+        tangent_basis = jax.vmap(lambda v: self.manifold.project_to_tangent(anchor, v))(
+            canonical_basis
+        )
         tangent_basis = tangent_basis.reshape(ambient_dim, ambient_dim).T
         u, _, _ = jnp.linalg.svd(tangent_basis, full_matrices=False)
         return u[:, : self.local_dim]
@@ -220,3 +220,10 @@ class ManifoldNeuralODE(eqx.Module):
         )
         x0 = self._extract_initial_condition(control_values)
         return self._solve_from_initial(x0, ts)
+
+    def integration_steps(self, control_values: jax.Array) -> jax.Array:
+        intervals = max(0, int(control_values.shape[0]) - 1)
+        return jnp.asarray(
+            intervals * int(self.steps_per_segment),
+            dtype=jnp.float32,
+        )

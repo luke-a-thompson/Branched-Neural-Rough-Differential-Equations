@@ -45,6 +45,7 @@ class SearchSpace(BaseModel):
     batch_size: ParamSpec | None = None
     epochs: ParamSpec | None = None
     mnrde_cde_state_dim: ParamSpec | None = None
+    mnrde_initial_state_param_dim: ParamSpec | None = None
     mnrde_init_hidden_dim: ParamSpec | None = None
     mnrde_vf_hidden_dim: ParamSpec | None = None
     mnrde_initial_cond_mlp_depth: ParamSpec | None = None
@@ -62,6 +63,7 @@ SEARCH_SPACE = SearchSpace(
     batch_size=None,
     epochs=None,
     mnrde_cde_state_dim=None,
+    mnrde_initial_state_param_dim=None,
     mnrde_init_hidden_dim=None,
     mnrde_vf_hidden_dim=None,
     mnrde_initial_cond_mlp_depth=None,
@@ -81,6 +83,7 @@ PARAM_PATHS: dict[str, list[str]] = {
     "epochs": ["experiment_config", "epochs"],
     "extrapolation_scheme": ["experiment_config", "extrapolation_scheme"],
     "mnrde_cde_state_dim": ["mnrde_config", "cde_state_dim"],
+    "mnrde_initial_state_param_dim": ["mnrde_config", "initial_state_param_dim"],
     "mnrde_init_hidden_dim": ["mnrde_config", "init_hidden_dim"],
     "mnrde_vf_hidden_dim": ["mnrde_config", "vf_hidden_dim"],
     "mnrde_initial_cond_mlp_depth": ["mnrde_config", "initial_cond_mlp_depth"],

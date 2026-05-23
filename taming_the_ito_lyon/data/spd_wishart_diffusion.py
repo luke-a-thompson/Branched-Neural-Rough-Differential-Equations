@@ -25,9 +25,13 @@ class SPDWishartDiffusionDataset(DatasetProtocol):
     def __post_init__(self) -> None:
         self.ordering = "shuffle" if self.split == "train" else "sequential"
 
-        raw = np.load(self.config.experiment_config.dataset_name.value, allow_pickle=False)
+        raw = np.load(
+            self.config.experiment_config.dataset_name.value, allow_pickle=False
+        )
         if not isinstance(raw, np.lib.npyio.NpzFile):
-            raise ValueError("Expected .npz file with keys {solution, ts, quadratic_variation}.")
+            raise ValueError(
+                "Expected .npz file with keys {solution, ts, quadratic_variation}."
+            )
         if "solution" not in raw:
             raise ValueError(f"Expected 'solution' in npz, got keys={list(raw.files)}")
         if "ts" not in raw:
@@ -45,8 +49,7 @@ class SPDWishartDiffusionDataset(DatasetProtocol):
             solution_raw = solution_raw[None, ...]
         if solution_raw.ndim != 3 or int(solution_raw.shape[-1]) != 6:
             raise ValueError(
-                "Expected solution shaped (B, T, 6) (vech), "
-                f"got {solution_raw.shape}"
+                f"Expected solution shaped (B, T, 6) (vech), got {solution_raw.shape}"
             )
         solution = solution_raw
 
@@ -63,7 +66,12 @@ class SPDWishartDiffusionDataset(DatasetProtocol):
         if int(qv_density.shape[1]) == int(solution.shape[1]) - 1:
             # Quadratic variation density is per-interval; pad to align with solution.
             pad = np.zeros(
-                (int(qv_density.shape[0]), 1, int(qv_density.shape[2]), int(qv_density.shape[3])),
+                (
+                    int(qv_density.shape[0]),
+                    1,
+                    int(qv_density.shape[2]),
+                    int(qv_density.shape[3]),
+                ),
                 dtype=qv_density.dtype,
             )
             qv_density = np.concatenate([pad, qv_density], axis=1)
@@ -124,14 +132,16 @@ class SPDWishartDiffusionDataset(DatasetProtocol):
         solution_np = self._solution_np
 
         if driver_np.ndim != 3 or int(driver_np.shape[-1]) != 36:
-            raise ValueError(f"Expected driver shaped (B, T, 36), got {driver_np.shape}")
+            raise ValueError(
+                f"Expected driver shaped (B, T, 36), got {driver_np.shape}"
+            )
         if solution_np.ndim != 3 or int(solution_np.shape[-1]) != 6:
             raise ValueError(
                 f"Expected solution shaped (B, T, 6) (vech), got {solution_np.shape}"
             )
-        if int(driver_np.shape[0]) != int(solution_np.shape[0]) or int(driver_np.shape[1]) != int(
-            solution_np.shape[1]
-        ):
+        if int(driver_np.shape[0]) != int(solution_np.shape[0]) or int(
+            driver_np.shape[1]
+        ) != int(solution_np.shape[1]):
             raise ValueError(
                 f"driver/solution must align in (B,T), got driver={driver_np.shape}, solution={solution_np.shape}"
             )

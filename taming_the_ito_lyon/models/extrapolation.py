@@ -260,7 +260,6 @@ class _PolynomialPath(diffrax.AbstractPath):
         return jnp.concatenate([jnp.array([1.0]), x_dot])
 
 
-
 class PiecewiseMLPScheme(eqx.Module):
     """Piecewise MLP extrapolation: ground-truth recon, MLP for future.
 

@@ -25,7 +25,11 @@ from taming_the_ito_lyon.training.io import (
     get_run_dirname,
     write_test_metrics,
 )
-from taming_the_ito_lyon.training.loops import run_eval_epoch, run_train_epoch
+from taming_the_ito_lyon.training.loops import (
+    average_integration_steps,
+    run_eval_epoch,
+    run_train_epoch,
+)
 from taming_the_ito_lyon.training.runtime import (
     build_runtime,
     trim_time_aligned_batch,
@@ -34,6 +38,7 @@ from taming_the_ito_lyon.training.runtime import (
 SAVED_MODELS_DIR = "saved_models"
 
 T = TypeVar("T")
+
 
 def _eval_metric_name(config: Config, loss_label: str) -> str:
     dataset_name = config.experiment_config.dataset_name
@@ -295,6 +300,14 @@ def experiment(
         if test_results_dict.eval_metric is not None
         else test_loss
     )
+    integration_stats = average_integration_steps(
+        runtime,
+        best_model,
+        runtime.test_loader,
+        runtime.test_iterate,
+        runtime.test_loader_state,
+        test_key,
+    )
     eval_metric_name = _eval_metric_name(config, runtime.loss_label)
 
     run_dirname = get_run_dirname(model_name)
@@ -319,6 +332,7 @@ def experiment(
         test_eval_metric=test_eval_metric,
         test_results_dict=test_results_dict,
         xla_scratch_size_mib=xla_scratch_size_mib,
+        integration_stats=integration_stats,
     )
     # Unregister cleanup since we moved the file
     atexit.unregister(cleanup_temp)
@@ -396,6 +410,14 @@ def run_test(
         else test_loss
     )
     eval_metric_name = _eval_metric_name(config, runtime.loss_label)
+    integration_stats = average_integration_steps(
+        runtime,
+        model,
+        runtime.test_loader,
+        runtime.test_iterate,
+        runtime.test_loader_state,
+        test_key,
+    )
     scratch_batch, _, _ = runtime.test_iterate(runtime.test_loader_state)
     if runtime.mode == TrainingMode.UNCONDITIONAL:
         if test_key is None or runtime.unconditional_control_sampler is None:
@@ -433,6 +455,7 @@ def run_test(
             metrics_name=metrics_name,
             metrics_seed=metrics_seed,
             xla_scratch_size_mib=xla_scratch_size_mib,
+            integration_stats=integration_stats,
         )
 
     tqdm.write(

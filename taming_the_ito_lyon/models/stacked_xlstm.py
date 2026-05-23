@@ -84,7 +84,9 @@ class StackedXLSTM(eqx.Module):
             use_bias=True,
             key=proj_key,
         )
-        self.layers = tuple(XLSTMLayer(layer_key, args=self.args) for layer_key in layer_keys)
+        self.layers = tuple(
+            XLSTMLayer(layer_key, args=self.args) for layer_key in layer_keys
+        )
         self.norm = eqx.nn.LayerNorm(d_model, use_weight=True, use_bias=True)
         self.readout_layer = eqx.nn.Linear(
             d_model,

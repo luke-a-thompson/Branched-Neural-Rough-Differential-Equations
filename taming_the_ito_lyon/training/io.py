@@ -11,26 +11,8 @@ from taming_the_ito_lyon.models import Model
 from taming_the_ito_lyon.training.results_gathering_fns import ResultsDict
 
 
-LOSS_METRICS: dict[str, dict[str, float | str]] = {
-    "mse": {"scale": 1.0, "unit": ""},
-    "rge": {"scale": 1.0, "unit": ""},
-    "sigker": {"scale": 1.0, "unit": ""},
-    "sigker_branched": {"scale": 1.0, "unit": ""},
-    "frobenius": {"scale": 1.0, "unit": ""},
-}
-
-
-def loss_meta(loss_label: str, value: float) -> tuple[float, str, float]:
-    info = LOSS_METRICS.get(loss_label, {"scale": 1.0, "unit": ""})
-    scale = float(info.get("scale", 1.0))
-    unit = str(info.get("unit", ""))
-    return value * scale, unit, scale
-
-
 def format_loss(loss_label: str, value: float) -> str:
-    scaled_value, unit, _ = loss_meta(loss_label, value)
-    suffix = f" {unit}" if unit else ""
-    return f"{scaled_value:.3f}{suffix}"
+    return f"{value:.3f}"
 
 
 def get_run_dirname(model_name: str) -> str:
@@ -48,52 +30,10 @@ def _best_value_and_epoch(values: list[float]) -> tuple[float | None, int | None
     return float(best_value), int(best_epoch)
 
 
-def _scale_loss_history(loss_label: str, values: list[float]) -> tuple[list[float], str, float]:
-    _, unit, scale = loss_meta(loss_label, 0.0)
-    return [float(v) * scale for v in values], unit, scale
-
-
 def _to_float(value: object) -> float | None:
-    if isinstance(value, bool):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
         return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-def _extract_seed_test_metric(seed_payload: dict[str, object]) -> float | None:
-    test_section = seed_payload.get("test")
-    if not isinstance(test_section, dict):
-        return None
-    metric_section = test_section.get("metric")
-    if not isinstance(metric_section, dict):
-        return None
-    return _to_float(metric_section.get("value"))
-
-
-def _extract_seed_results(seed_payload: dict[str, object]) -> list[tuple[float, float]]:
-    test_section = seed_payload.get("test")
-    if not isinstance(test_section, dict):
-        return []
-    results_dict = test_section.get("results_dict")
-    if not isinstance(results_dict, dict):
-        return []
-    raw_times = results_dict.get("results_times")
-    raw_values = results_dict.get("results")
-    if not isinstance(raw_times, list) or not isinstance(raw_values, list):
-        return []
-
-    time_value_pairs: list[tuple[float, float]] = []
-    for raw_time, raw_value in zip(raw_times, raw_values):
-        time_value = _to_float(raw_time)
-        result_value = _to_float(raw_value)
-        if time_value is None or result_value is None:
-            continue
-        time_value_pairs.append((float(time_value), float(result_value)))
-    return time_value_pairs
+    return float(value)
 
 
 def _build_seed_aggregate(
@@ -108,13 +48,23 @@ def _build_seed_aggregate(
             continue
         seed_count += 1
 
-        metric_value = _extract_seed_test_metric(seed_payload)
-        if metric_value is not None:
-            metric_values.append(float(metric_value))
+        test_section = seed_payload.get("test")
+        if isinstance(test_section, dict):
+            metric_section = test_section.get("metric")
+            if isinstance(metric_section, dict):
+                v = _to_float(metric_section.get("value"))
+                if v is not None:
+                    metric_values.append(v)
 
-        for time_value, result_value in _extract_seed_results(seed_payload):
-            bucket = results_by_time.setdefault(float(time_value), [])
-            bucket.append(float(result_value))
+            raw_results = test_section.get("results_dict")
+            if isinstance(raw_results, dict):
+                raw_times = raw_results.get("results_times")
+                raw_values = raw_results.get("results")
+                if isinstance(raw_times, list) and isinstance(raw_values, list):
+                    for rt, rv in zip(raw_times, raw_values):
+                        t, v = _to_float(rt), _to_float(rv)
+                        if t is not None and v is not None:
+                            results_by_time.setdefault(t, []).append(v)
 
     if seed_count == 0:
         return None
@@ -124,7 +74,9 @@ def _build_seed_aggregate(
         aggregate_test["metric"] = {
             "name": eval_metric_name,
             "mean": float(fmean(metric_values)),
-            "std_1sigma": float(stdev(metric_values)) if len(metric_values) > 1 else None,
+            "std_1sigma": float(stdev(metric_values))
+            if len(metric_values) > 1
+            else None,
             "count": len(metric_values),
         }
 
@@ -174,15 +126,14 @@ def build_training_metrics_payload(
     test_eval_metric: float,
     test_results_dict: ResultsDict,
     xla_scratch_size_mib: float | None = None,
+    integration_stats: dict[str, float | int] | None = None,
 ) -> dict[str, object]:
-    scaled_train_history, unit, scale = _scale_loss_history(loss_label, train_loss_history)
-    scaled_val_history, _, _ = _scale_loss_history(loss_label, val_loss_history)
-    scaled_test_loss, _, _ = loss_meta(loss_label, float(test_loss))
-    best_train_loss, best_train_epoch = _best_value_and_epoch(scaled_train_history)
-    best_val_loss, best_val_loss_epoch = _best_value_and_epoch(scaled_val_history)
+    train_history = [float(v) for v in train_loss_history]
+    val_history = [float(v) for v in val_loss_history]
+    best_train_loss, best_train_epoch = _best_value_and_epoch(train_history)
+    best_val_loss, best_val_loss_epoch = _best_value_and_epoch(val_history)
     best_val_metric, best_val_metric_epoch = _best_value_and_epoch(val_metric_history)
-    test_results = dataclasses.asdict(test_results_dict)
-    metrics: dict[str, object] = {
+    return {
         "run": {
             "name": run_dirname,
             "total_epochs": final_epoch + 1,
@@ -200,15 +151,16 @@ def build_training_metrics_payload(
         "memory": {
             "xla_scratch_size_mib": xla_scratch_size_mib,
         },
+        "integration": integration_stats,
         "train": {
             "loss": {
                 "name": loss_label,
                 "best": best_train_loss,
                 "best_epoch": best_train_epoch,
-                "last": scaled_train_history[-1] if scaled_train_history else None,
-                "history": scaled_train_history,
-                "unit": unit,
-                "scale": scale,
+                "last": train_history[-1] if train_history else None,
+                "history": train_history,
+                "unit": "",
+                "scale": 1.0,
             }
         },
         "validation": {
@@ -216,10 +168,10 @@ def build_training_metrics_payload(
                 "name": loss_label,
                 "best": best_val_loss,
                 "best_epoch": best_val_loss_epoch,
-                "last": scaled_val_history[-1] if scaled_val_history else None,
-                "history": scaled_val_history,
-                "unit": unit,
-                "scale": scale,
+                "last": val_history[-1] if val_history else None,
+                "history": val_history,
+                "unit": "",
+                "scale": 1.0,
             },
             "metric": {
                 "name": eval_metric_name,
@@ -233,18 +185,17 @@ def build_training_metrics_payload(
         "test": {
             "loss": {
                 "name": loss_label,
-                "value": scaled_test_loss,
-                "unit": unit,
-                "scale": scale,
+                "value": float(test_loss),
+                "unit": "",
+                "scale": 1.0,
             },
             "metric": {
                 "name": eval_metric_name,
                 "value": float(test_eval_metric),
             },
-            "results_dict": test_results,
+            "results_dict": dataclasses.asdict(test_results_dict),
         },
     }
-    return metrics
 
 
 def finalize_training_run(
@@ -269,6 +220,7 @@ def finalize_training_run(
     test_eval_metric: float,
     test_results_dict: ResultsDict,
     xla_scratch_size_mib: float | None = None,
+    integration_stats: dict[str, float | int] | None = None,
 ) -> str:
     run_dir = os.path.join("saved_models", run_dirname)
     os.makedirs(run_dir, exist_ok=True)
@@ -306,6 +258,7 @@ def finalize_training_run(
         test_eval_metric=test_eval_metric,
         test_results_dict=test_results_dict,
         xla_scratch_size_mib=xla_scratch_size_mib,
+        integration_stats=integration_stats,
     )
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
@@ -327,9 +280,9 @@ def write_test_metrics(
     metrics_name: str = "test_metrics.json",
     metrics_seed: int | None = None,
     xla_scratch_size_mib: float | None = None,
+    integration_stats: dict[str, float | int] | None = None,
 ) -> str:
     metrics_path = os.path.join(run_dir, metrics_name)
-    scaled_test, unit, scale = loss_meta(loss_label, test_eval_metric)
     metrics = {
         "run": {
             "name": os.path.basename(run_dir),
@@ -345,12 +298,13 @@ def write_test_metrics(
         "memory": {
             "xla_scratch_size_mib": xla_scratch_size_mib,
         },
+        "integration": integration_stats,
         "test": {
             "loss": {
                 "name": loss_label,
-                "value": scaled_test,
-                "unit": unit,
-                "scale": scale,
+                "value": float(test_eval_metric),
+                "unit": "",
+                "scale": 1.0,
             },
             "metric": {
                 "name": eval_metric_name,
@@ -386,6 +340,7 @@ def write_test_metrics(
     combined_metrics["run"] = metrics["run"]
     combined_metrics["model"] = metrics["model"]
     combined_metrics["memory"] = metrics["memory"]
+    combined_metrics["integration"] = metrics["integration"]
     combined_metrics["seed_metrics"] = seed_metrics
     seed_metrics[str(int(metrics_seed))] = metrics
     combined_metrics["seeds"] = sorted(int(seed) for seed in seed_metrics.keys())

@@ -8,7 +8,11 @@ import optax
 from cyreal.loader import DataLoader, _LoaderState
 
 from taming_the_ito_lyon.config import Config
-from taming_the_ito_lyon.config.config_options import Datasets, ModelType, TrainingMode
+from taming_the_ito_lyon.config.config_options import (
+    Datasets,
+    ModelType,
+    TrainingMode,
+)
 from taming_the_ito_lyon.models import Model
 from taming_the_ito_lyon.training.factories import (
     create_dataloaders,
@@ -52,9 +56,7 @@ class ExperimentRuntime:
         [Model, jax.Array, jax.Array, jax.Array], tuple[jax.Array, optax.Updates]
     ]
     batch_loss_fn: Callable[[Model, jax.Array, jax.Array, jax.Array], jax.Array]
-    loss_on_preds_fn: Callable[
-        [jax.Array, jax.Array, jax.Array, jax.Array], jax.Array
-    ]
+    loss_on_preds_fn: Callable[[jax.Array, jax.Array, jax.Array, jax.Array], jax.Array]
     eval_step: Callable[[jax.Array, jax.Array, jax.Array, Model], jax.Array]
     predict_batch: Callable[[jax.Array, Model], jax.Array]
     results_gathering_fn: ResultsGatheringFn
@@ -83,6 +85,8 @@ def trim_time_aligned_batch(
     """Trim batch tensors to the runtime's effective time length when needed."""
     trim_len = int(runtime.effective_timesteps)
     if int(control_values_b.shape[1]) <= trim_len:
+        return control_values_b, target_b, gt_driver_b
+    if int(target_b.shape[1]) <= trim_len:
         return control_values_b, target_b, gt_driver_b
     return (
         control_values_b[:, :trim_len, ...],

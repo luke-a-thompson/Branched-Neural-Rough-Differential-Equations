@@ -30,10 +30,12 @@ def test_build_training_metrics_payload_separates_loss_and_metric() -> None:
             results=[0.1, 0.2],
         ),
         xla_scratch_size_mib=12.5,
+        integration_stats={"average_num_steps": 7.5, "num_counted_paths": 4},
     )
 
     assert payload["timings"]["time_to_best_epoch_s"] == 8.0
     assert payload["memory"]["xla_scratch_size_mib"] == 12.5
+    assert payload["integration"]["average_num_steps"] == 7.5
     assert payload["train"]["loss"]["history"] == [12.0, 9.0, 10.0]
     assert payload["validation"]["loss"]["history"] == [11.0, 8.5, 8.75]
     assert payload["validation"]["metric"]["name"] == "median_eigenvalue_w1"
@@ -65,6 +67,7 @@ def test_write_test_metrics_uses_nested_schema(tmp_path) -> None:
         ),
         checkpoint_path="saved_models/demo_run/best.eqx",
         xla_scratch_size_mib=2.5,
+        integration_stats={"average_num_steps": 8.25, "num_counted_paths": 8},
     )
 
     with open(metrics_path, "r", encoding="utf-8") as handle:
@@ -72,6 +75,7 @@ def test_write_test_metrics_uses_nested_schema(tmp_path) -> None:
 
     assert payload["test"]["loss"]["name"] == "sigker_branched"
     assert payload["memory"]["xla_scratch_size_mib"] == 2.5
+    assert payload["integration"]["average_num_steps"] == 8.25
     assert payload["test"]["metric"]["name"] == "median_eigenvalue_w1"
     assert payload["test"]["results_dict"]["results"] == [0.1]
     assert "sigker_branched" not in payload

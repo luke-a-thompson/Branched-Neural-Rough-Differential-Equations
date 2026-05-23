@@ -117,14 +117,18 @@ def _extract_rge(metrics: dict[str, object]) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
 
-def _format_pm(value: float | None, ci: float | None, scale: float, decimals: int) -> str:
+def _format_pm(
+    value: float | None, ci: float | None, scale: float, decimals: int
+) -> str:
     if value is None:
         return ""
     scaled_value = float(value) * float(scale)
     if ci is None:
         return f"${scaled_value:.{decimals}f}$"
     scaled_ci = float(ci) * float(scale)
-    return f"${scaled_value:.{decimals}f} \\scriptstyle{{\\pm {scaled_ci:.{decimals}f}}}$"
+    return (
+        f"${scaled_value:.{decimals}f} \\scriptstyle{{\\pm {scaled_ci:.{decimals}f}}}$"
+    )
 
 
 def _format_int(value: float | None) -> str:
@@ -174,12 +178,18 @@ def build_rows(
         else:
             metrics_payloads = load_seed_payloads(run_dir, seeds)
             inference_vals = [
-                v for v in (_extract_inference_s(p) for p in metrics_payloads) if v is not None
+                v
+                for v in (_extract_inference_s(p) for p in metrics_payloads)
+                if v is not None
             ]
             frob_vals = [
-                v for v in (_extract_frobenius_test(p) for p in metrics_payloads) if v is not None
+                v
+                for v in (_extract_frobenius_test(p) for p in metrics_payloads)
+                if v is not None
             ]
-            rge_vals = [v for v in (_extract_rge(p) for p in metrics_payloads) if v is not None]
+            rge_vals = [
+                v for v in (_extract_rge(p) for p in metrics_payloads) if v is not None
+            ]
 
             inference_s, inference_ci = (
                 _mean_and_std([float(v) for v in inference_vals])
@@ -192,7 +202,9 @@ def build_rows(
                 else (None, None)
             )
             rge, rge_ci = (
-                _mean_and_std([float(v) for v in rge_vals]) if len(rge_vals) > 0 else (None, None)
+                _mean_and_std([float(v) for v in rge_vals])
+                if len(rge_vals) > 0
+                else (None, None)
             )
 
             metrics = metrics_payloads[0]
@@ -227,7 +239,9 @@ def build_rows(
 
 
 def render_table(rows: list[So3Row]) -> str:
-    rows = sorted(rows, key=lambda row: float("inf") if row.rge is None else float(row.rge))
+    rows = sorted(
+        rows, key=lambda row: float("inf") if row.rge is None else float(row.rge)
+    )
     best_frob = _min_value([row.frobenius_test for row in rows])
     best_rge = _min_value([row.rge for row in rows])
 
@@ -249,14 +263,23 @@ def render_table(rows: list[So3Row]) -> str:
     ]
 
     for row in rows:
-        inference_cell = _format_pm(row.inference_s, row.inference_s_ci, scale=1.0, decimals=1)
+        inference_cell = _format_pm(
+            row.inference_s, row.inference_s_ci, scale=1.0, decimals=1
+        )
         frob_rendered = _format_pm(
-            row.frobenius_test, row.frobenius_test_ci, scale=FROBENIUS_DISPLAY_SCALE, decimals=2
+            row.frobenius_test,
+            row.frobenius_test_ci,
+            scale=FROBENIUS_DISPLAY_SCALE,
+            decimals=2,
         )
         frob_cell = _bold_if_match(row.frobenius_test, best_frob, frob_rendered)
-        rge_rendered = _format_pm(row.rge, row.rge_ci, scale=RGE_DISPLAY_SCALE, decimals=2)
+        rge_rendered = _format_pm(
+            row.rge, row.rge_ci, scale=RGE_DISPLAY_SCALE, decimals=2
+        )
         rge_cell = _bold_if_match(row.rge, best_rge, rge_rendered)
-        lines.append(" & ".join([row.method, inference_cell, frob_cell, rge_cell]) + r" \\")
+        lines.append(
+            " & ".join([row.method, inference_cell, frob_cell, rge_cell]) + r" \\"
+        )
 
     lines.extend([r"\end{tblr}", r"}", r"\end{table}"])
     return "\n".join(lines)

@@ -17,7 +17,9 @@ from .extrapolation import ExtrapolationScheme
 from .logsignatures import (
     compute_windowed_logsignatures_from_values,
 )
-from .logsig_cde_solve import solve_cde_from_windowed_logsigs
+from .logsig_cde_solve import (
+    solve_cde_from_windowed_logsigs,
+)
 
 
 class LogNCDEFunc(eqx.Module):
@@ -159,7 +161,7 @@ class LogNCDE(eqx.Module):
     ) -> jax.Array:
         """Solve the induced CDE given initial input `x0` and disjoint window log-signatures."""
         h0 = self.initial(x0)
-        return solve_cde_from_windowed_logsigs(
+        ys, _ = solve_cde_from_windowed_logsigs(
             ts,
             log_signatures,
             signature_window_size=int(self.signature_window_size),
@@ -170,6 +172,24 @@ class LogNCDE(eqx.Module):
             stepsize_controller=self.stepsize_controller,
             dt0=self.dt0,
         )
+        return ys
+
+    def _integration_steps_from_logsigs(
+        self, ts: jax.Array, x0: jax.Array, log_signatures: jax.Array
+    ) -> jax.Array:
+        h0 = self.initial(x0)
+        _, stats = solve_cde_from_windowed_logsigs(
+            ts,
+            log_signatures,
+            signature_window_size=int(self.signature_window_size),
+            cde_func=self.cde_func,
+            y0=h0,
+            solver=self.solver,
+            adjoint=self.adjoint,
+            stepsize_controller=self.stepsize_controller,
+            dt0=self.dt0,
+        )
+        return jnp.asarray(stats["num_steps"], dtype=jnp.float32)
 
     def _forward_with_control(
         self, ts: jax.Array, control: diffrax.AbstractPath
@@ -221,3 +241,23 @@ class LogNCDE(eqx.Module):
             return jax.vmap(apply_readout)(hidden_over_time)
 
         return self.readout_activation(self.readout(hidden_over_time[-1]))
+
+    def integration_steps(self, control_values: jax.Array) -> jax.Array:
+        length = control_values.shape[0]
+        ts = jnp.linspace(0.0, 1.0, length, dtype=control_values.dtype)
+        if self.extrapolation_scheme is not None:
+            assert self.n_recon is not None
+            control, _ = self.extrapolation_scheme.create_control(
+                ts, control_values, self.n_recon
+            )
+            x0 = control.evaluate(ts[0])
+            control_values = jax.vmap(control.evaluate)(ts)
+        else:
+            x0 = control_values[0]
+        log_signatures = compute_windowed_logsignatures_from_values(
+            control_values,
+            self.shuffle_hopf_algebra,
+            int(self.signature_depth),
+            int(self.signature_window_size),
+        )
+        return self._integration_steps_from_logsigs(ts, x0, log_signatures)

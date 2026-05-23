@@ -1,13 +1,35 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import Any
 
 import diffrax
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 
 from .logsignatures import compute_disjoint_signature_times
 
+
+class TimeBrownianControl(eqx.Module):
+    """Control with deterministic time plus a diffrax Brownian path."""
+
+    brownian: diffrax.VirtualBrownianTree
+
+    def evaluate(
+        self,
+        t0: jax.typing.ArrayLike,
+        t1: jax.typing.ArrayLike | None = None,
+        **kwargs: object,
+    ) -> jax.Array:
+        if t1 is None:
+            time_value = jnp.asarray(t0)[None]
+        else:
+            time_value = jnp.asarray(t1 - t0)[None]
+        return jnp.concatenate(
+            [time_value, self.brownian.evaluate(t0, t1, **kwargs)],
+            axis=0,
+        )
 
 
 def solve_cde_from_windowed_logsigs(
@@ -21,7 +43,7 @@ def solve_cde_from_windowed_logsigs(
     adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
     stepsize_controller: diffrax.AbstractStepSizeController,
     dt0: float | None = None,
-) -> jax.Array:
+) -> tuple[jax.Array, dict[str, Any]]:
     """Solve a CDE/ODE driven by the cumulative sum of disjoint window log-signatures.
 
     Parameters
@@ -51,7 +73,6 @@ def solve_cde_from_windowed_logsigs(
     term = diffrax.ControlTerm(cde_func, logsig_control).to_ode()
     saveat = diffrax.SaveAt(ts=ts)
 
-    # This will evaluate the vector field many times over the course of the solve.
     if dt0 is None and isinstance(stepsize_controller, diffrax.ConstantStepSize):
         dt0 = 0.05
 
@@ -69,7 +90,7 @@ def solve_cde_from_windowed_logsigs(
     )
 
     assert solution.ys is not None
-    return solution.ys
+    return solution.ys, solution.stats
 
 
 def solve_cde_from_windowed_logsigs_piecewise(
@@ -83,8 +104,9 @@ def solve_cde_from_windowed_logsigs_piecewise(
     adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
     stepsize_controller: diffrax.AbstractStepSizeController,
     dt0: float | None = None,
-) -> jax.Array:
+) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Solve a CDE/ODE by integrating each window with constant dz/dt (no interpolation)."""
+    del dt0
     step = int(signature_window_size)
     ts_sig = compute_disjoint_signature_times(ts, step)
     num_windows = int(windowed_logsigs.shape[0])
@@ -96,12 +118,13 @@ def solve_cde_from_windowed_logsigs_piecewise(
 
     state_dim = int(y0.shape[0])
     outputs = jnp.zeros((num_windows, step + 1, state_dim), dtype=y0.dtype)
+    step_counts = jnp.zeros((num_windows,), dtype=jnp.int32)
 
     def body(
         i: jax.Array,
-        carry: tuple[jax.Array, jax.Array],
-    ) -> tuple[jax.Array, jax.Array]:
-        y, out = carry
+        carry: tuple[jax.Array, jax.Array, jax.Array],
+    ) -> tuple[jax.Array, jax.Array, jax.Array]:
+        y, out, counts = carry
         start_index = i * step
         ts_window = jax.lax.dynamic_slice(ts, (start_index,), (step + 1,))
         t0 = ts_window[0]
@@ -128,12 +151,18 @@ def solve_cde_from_windowed_logsigs_piecewise(
         )
         assert solution.ys is not None
         out = out.at[i].set(solution.ys)
-        return solution.ys[-1], out
+        counts = counts.at[i].set(solution.stats["num_steps"])
+        return solution.ys[-1], out, counts
 
-    _, outputs = jax.lax.fori_loop(0, num_windows, body, (y0, outputs))
+    _, outputs, step_counts = jax.lax.fori_loop(
+        0, num_windows, body, (y0, outputs, step_counts)
+    )
 
     first = outputs[0]
     if num_windows == 1:
-        return first
-    rest = outputs[1:, 1:, :].reshape(((num_windows - 1) * step, state_dim))
-    return jnp.concatenate([first, rest], axis=0)
+        ys = first
+    else:
+        rest = outputs[1:, 1:, :].reshape(((num_windows - 1) * step, state_dim))
+        ys = jnp.concatenate([first, rest], axis=0)
+    return ys, {"num_steps": jnp.sum(step_counts)}
+

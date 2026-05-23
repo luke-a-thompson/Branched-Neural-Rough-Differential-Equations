@@ -120,24 +120,16 @@ def create_solver(config: Config) -> diffrax.AbstractSolver:
     match config.solver_config.solver:
         case SolverType.TSIT5:
             return diffrax.Tsit5()
-        case SolverType.BOSH3:
-            return diffrax.Bosh3()
-        case SolverType.DOPRI5:
-            return diffrax.Dopri5()
-        case SolverType.DOPRI8:
-            return diffrax.Dopri8()
         case SolverType.HEUN:
             return diffrax.Heun()
-        case SolverType.EULER:
-            return diffrax.Euler()
-        case SolverType.EES25:
-            from ..models.ees25 import EES25
-
-            return EES25()
         case SolverType.EES252N:
             from diffrax_lowstorage import EES25
 
             return EES25()
+        case SolverType.CFEES25:
+            from georax import CFEES25
+
+            return CFEES25()
         case _:
             raise ValueError(f"Unknown solver: {config.solver_config.solver}")
 
@@ -146,8 +138,6 @@ def create_adjoint(config: Config) -> diffrax.AbstractAdjoint:
     match config.solver_config.adjoint:
         case AdjointType.RECURSIVE_CHECKPOINT:
             return diffrax.RecursiveCheckpointAdjoint()
-        case AdjointType.DIRECT:
-            return diffrax.DirectAdjoint()
         case AdjointType.REVERSIBLE:
             return diffrax.ReversibleAdjoint()
         case _:
@@ -269,9 +259,16 @@ def create_model(
             )
         case MNRDEConfig():
             brownian_channels = config.nn_config.brownian_channels
+            initial_state_param_dim = (
+                config.nn_config.initial_state_param_dim
+                if config.experiment_config.hidden_state_mode
+                == HiddenStateMode.PROBLEM_MANIFOLD
+                else config.nn_config.cde_state_dim
+            )
+            assert initial_state_param_dim is not None
             return MNDRE(
                 input_path_dim=input_path_dim,
-                cde_state_dim=config.nn_config.cde_state_dim,
+                initial_state_param_dim=initial_state_param_dim,
                 initial_hidden_dim=config.nn_config.init_hidden_dim,
                 vf_hidden_dim=config.nn_config.vf_hidden_dim,
                 initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
@@ -289,6 +286,7 @@ def create_model(
                 n_recon=config.experiment_config.n_recon,
                 brownian_channels=brownian_channels,
                 brownian_corr=0.0,
+                virtual_brownian_refinement=config.nn_config.virtual_brownian_refinement,
                 key=model_key,
             )
         case MODEConfig():
@@ -398,6 +396,13 @@ def create_optimizer(
     return base_optim
 
 
+def _splits(cls: type, config: Config, *, disk: bool) -> tuple:
+    method = "make_disk_source" if disk else "make_array_source"
+    return tuple(
+        getattr(cls(config=config, split=s), method)() for s in ("train", "val", "test")
+    )
+
+
 def create_dataloaders(
     config: Config,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
@@ -421,32 +426,15 @@ def create_dataloaders(
             else:
                 dataset_cls = RoughVolatilityDataset
 
-            train = dataset_cls(config=config, split="train").make_array_source()
-            val = dataset_cls(config=config, split="val").make_array_source()
-            test = dataset_cls(config=config, split="test").make_array_source()
+            train, val, test = _splits(dataset_cls, config, disk=False)
         case Datasets.SYNTHETIC_GBM:
             from taming_the_ito_lyon.data.synthetic_gbm import SyntheticGBMDataset
 
-            train = SyntheticGBMDataset(
-                config=config, split="train"
-            ).make_array_source()
-            val = SyntheticGBMDataset(config=config, split="val").make_array_source()
-            test = SyntheticGBMDataset(config=config, split="test").make_array_source()
+            train, val, test = _splits(SyntheticGBMDataset, config, disk=False)
         case Datasets.SG_SO3_SIMULATION:
             from taming_the_ito_lyon.data.so3_dynamics_sim import SO3DynamicsSim
 
-            train = SO3DynamicsSim(
-                config=config,
-                split="train",
-            ).make_disk_source()
-            val = SO3DynamicsSim(
-                config=config,
-                split="val",
-            ).make_disk_source()
-            test = SO3DynamicsSim(
-                config=config,
-                split="test",
-            ).make_disk_source()
+            train, val, test = _splits(SO3DynamicsSim, config, disk=True)
         case (
             Datasets.OXFORD_MULTIMOTION_STATIC
             | Datasets.OXFORD_MULTIMOTION_TRANSLATIONAL
@@ -456,32 +444,13 @@ def create_dataloaders(
                 OxfordMultimotionDataset,
             )
 
-            train = OxfordMultimotionDataset(
-                config=config,
-                split="train",
-            ).make_disk_source()
-            val = OxfordMultimotionDataset(
-                config=config,
-                split="val",
-            ).make_disk_source()
-            test = OxfordMultimotionDataset(
-                config=config,
-                split="test",
-            ).make_disk_source()
+            train, val, test = _splits(OxfordMultimotionDataset, config, disk=True)
         case Datasets.SPD_WISHART_DIFFUSION:
             from taming_the_ito_lyon.data.spd_wishart_diffusion import (
                 SPDWishartDiffusionDataset,
             )
 
-            train = SPDWishartDiffusionDataset(
-                config=config, split="train"
-            ).make_disk_source()
-            val = SPDWishartDiffusionDataset(
-                config=config, split="val"
-            ).make_disk_source()
-            test = SPDWishartDiffusionDataset(
-                config=config, split="test"
-            ).make_disk_source()
+            train, val, test = _splits(SPDWishartDiffusionDataset, config, disk=True)
         case Datasets.PPG_DALIA:
             from pathlib import Path
 
@@ -524,18 +493,19 @@ def create_dataloaders(
                 f"Unknown dataset name: {config.experiment_config.dataset_name}"
             )
 
-    dataloaders: list[DataLoader] = []
-    for source in [train, val, test]:
-        pipeline = [
-            source,
-            BatchTransform(
-                batch_size=config.experiment_config.batch_size, drop_last=True
-            ),
-        ]
-        dataloader = DataLoader(pipeline)
-        dataloader.init_state(jax.random.key(config.experiment_config.seed))
-        dataloaders.append(dataloader)
-    return dataloaders[0], dataloaders[1], dataloaders[2]  # train, val, test
+    def _make_loader(source: object) -> DataLoader:
+        loader = DataLoader(
+            [
+                source,
+                BatchTransform(
+                    batch_size=config.experiment_config.batch_size, drop_last=True
+                ),
+            ]
+        )
+        loader.init_state(jax.random.key(config.experiment_config.seed))
+        return loader
+
+    return _make_loader(train), _make_loader(val), _make_loader(test)
 
 
 def create_unconditional_control_sampler(
@@ -550,10 +520,8 @@ def create_unconditional_control_sampler(
     where the leading channel is `ts` and the remaining channels are the sampled
     driver values on the same grid.
     """
+    import diffrax
     import jax.numpy as jnp
-    from stochastax.controls.drivers import (
-        bm_driver,
-    )
 
     def with_time(ts: jax.Array, values: jax.Array) -> jax.Array:
         return jnp.concatenate([ts[:, None], values], axis=-1)
@@ -574,7 +542,30 @@ def create_unconditional_control_sampler(
         if timesteps <= 0:
             raise ValueError(f"ts must have length >= 2, got {ts.shape[0]}")
 
-        values = bm_driver(key, timesteps=timesteps, dim=int(driver_dim)).path
+        dt = ts[1:] - ts[:-1]
+        brownian = diffrax.VirtualBrownianTree(
+            t0=ts[0],
+            t1=ts[-1],
+            tol=jnp.min(dt) / 2,
+            shape=jax.ShapeDtypeStruct(
+                (int(driver_dim),),
+                ts.dtype,
+            ),
+            key=key,
+        )
+
+        def scan_increment(_: None, interval: tuple[jax.Array, jax.Array]):
+            t0, t1 = interval
+            return None, brownian.evaluate(t0, t1)
+
+        _, increments = jax.lax.scan(scan_increment, None, (ts[:-1], ts[1:]))
+        values = jnp.concatenate(
+            [
+                jnp.zeros((1, int(driver_dim)), dtype=ts.dtype),
+                jnp.cumsum(increments, axis=0),
+            ],
+            axis=0,
+        )
         if anchor_at_basepoint:
             values = _anchor_at_basepoint(values)
         return with_time(ts, values)
@@ -631,7 +622,6 @@ def create_grad_batch_loss_fns(
         _maybe_unvech_spd,
         branched_signature_kernel_score,
         frobenius_loss,
-        initial_step_log_eigenvalue_loss,
         mse_loss,
         rotational_geodesic_loss,
         signature_kernel_score,
@@ -706,75 +696,8 @@ def create_grad_batch_loss_fns(
         raise RuntimeError("No base loss configured.")
 
     use_spd = config.experiment_config.manifold == ManifoldType.SPD
-    use_spd_initial_step_loss = (
-        config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION
-    )
-    use_explicit_initial_step_loss = (
-        use_spd_initial_step_loss
-        and config.experiment_config.loss
-        in (
-            LossType.SIGKER,
-            LossType.SIGKER_BRANCHED,
-        )
-    )
-    # Note: `SIGKER` can operate on SPD outputs by converting 3x3 matrix paths to a
-    # Euclidean representation inside the loss (e.g. vech(X) for SPD). We therefore
-    # allow SIGKER in SPD mode.
 
-    def batch_loss_fn(
-        model: Model,
-        control_values_b: jax.Array,
-        target_b: jax.Array,
-        gt_driver_b: jax.Array,
-    ) -> jax.Array:
-        preds = jax.vmap(model)(control_values_b)
-        if (
-            config.experiment_config.dataset_name == Datasets.PPG_DALIA
-            and preds.ndim >= 2
-            and target_b.ndim >= 2
-            and int(preds.shape[1]) != int(target_b.shape[1])
-        ):
-            preds = jax.image.resize(
-                preds,
-                shape=(int(preds.shape[0]), int(target_b.shape[1]), *preds.shape[2:]),
-                method="linear",
-            )
-        if use_spd:
-            preds = _maybe_unvech_spd(preds)
-            target_b = _maybe_unvech_spd(target_b)
-        if config.experiment_config.loss == LossType.SIGKER_BRANCHED:
-            assert base_branched_loss_fn is not None
-            if sigker_branched_use_w:
-                w_model = (
-                    control_values_b[..., 1]
-                    if int(control_values_b.shape[-1]) >= 2
-                    else control_values_b[..., 0]
-                )
-                w_gt = gt_driver_b[..., 0]
-                base = base_branched_loss_fn(
-                    preds, target_b, pred_aux=w_model, target_aux=w_gt
-                )
-            else:
-                # For Wishart diffusion SPD datasets, `gt_driver_b` is a side-channel
-                # containing the bracket density for vech(X) (flattened 6x6 per time).
-                if (
-                    config.experiment_config.dataset_name
-                    == Datasets.SPD_WISHART_DIFFUSION
-                ):
-                    base = base_branched_loss_fn(
-                        preds, target_b, target_cov=gt_driver_b
-                    )
-                else:
-                    base = base_branched_loss_fn(preds, target_b)
-        else:
-            assert loss_fn is not None
-            base = loss_fn(preds, target_b)
-
-        if use_explicit_initial_step_loss:
-            base = base + initial_step_log_eigenvalue_loss(preds, target_b)
-        return base
-
-    def loss_on_preds_fn(
+    def _compute_loss(
         preds: jax.Array,
         target_b: jax.Array,
         control_values_b: jax.Array,
@@ -802,26 +725,32 @@ def create_grad_batch_loss_fns(
                     if int(control_values_b.shape[-1]) >= 2
                     else control_values_b[..., 0]
                 )
-                w_gt = gt_driver_b[..., 0]
-                base = base_branched_loss_fn(
-                    preds, target_b, pred_aux=w_model, target_aux=w_gt
+                return base_branched_loss_fn(
+                    preds, target_b, pred_aux=w_model, target_aux=gt_driver_b[..., 0]
                 )
-            else:
-                if (
-                    config.experiment_config.dataset_name
-                    == Datasets.SPD_WISHART_DIFFUSION
-                ):
-                    base = base_branched_loss_fn(
-                        preds, target_b, target_cov=gt_driver_b
-                    )
-                else:
-                    base = base_branched_loss_fn(preds, target_b)
-        else:
-            assert loss_fn is not None
-            base = loss_fn(preds, target_b)
-        if use_explicit_initial_step_loss:
-            base = base + initial_step_log_eigenvalue_loss(preds, target_b)
-        return base
+            if config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION:
+                return base_branched_loss_fn(preds, target_b, target_cov=gt_driver_b)
+            return base_branched_loss_fn(preds, target_b)
+        assert loss_fn is not None
+        return loss_fn(preds, target_b)
+
+    def batch_loss_fn(
+        model: Model,
+        control_values_b: jax.Array,
+        target_b: jax.Array,
+        gt_driver_b: jax.Array,
+    ) -> jax.Array:
+        return _compute_loss(
+            jax.vmap(model)(control_values_b), target_b, control_values_b, gt_driver_b
+        )
+
+    def loss_on_preds_fn(
+        preds: jax.Array,
+        target_b: jax.Array,
+        control_values_b: jax.Array,
+        gt_driver_b: jax.Array,
+    ) -> jax.Array:
+        return _compute_loss(preds, target_b, control_values_b, gt_driver_b)
 
     return (
         eqx.filter_value_and_grad(batch_loss_fn),

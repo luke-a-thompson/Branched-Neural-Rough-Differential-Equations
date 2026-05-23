@@ -19,11 +19,12 @@ early_stopping_patience = 3
 training_mode = "unconditional"
 
 manifold = "spd"
+hidden_state_mode = "euclidean"
 evolving_out = true
 
 [solver_config]
 stepsize_controller = "pid"
-solver = "tsit5"       # tsit5, bosh3, dopri5, dopri8, heun, euler
+solver = "heun"       # tsit5, bosh3, dopri5, dopri8, heun, euler
 adjoint = "recursive_checkpoint"  # recursive_checkpoint, direct
 rtol = 1e-3
 atol = 1e-3

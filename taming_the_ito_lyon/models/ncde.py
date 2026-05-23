@@ -203,6 +203,29 @@ class NeuralCDE(eqx.Module):
         assert solution.ys is not None
         return solution.ys
 
+    def _integration_steps_with_control(
+        self,
+        ts: jax.Array,
+        control: diffrax.AbstractPath,
+        *,
+        dt0: float | None,
+    ) -> jax.Array:
+        x0 = control.evaluate(ts[0])
+        y0 = self.initial_cond_mlp(x0)
+        term = diffrax.ControlTerm(self.cde_func, control).to_ode()
+        solution = diffrax.diffeqsolve(
+            terms=term,
+            solver=self.solver,
+            t0=ts[0],
+            t1=ts[-1],
+            dt0=dt0,
+            y0=y0,
+            stepsize_controller=self.stepsize_controller,
+            saveat=diffrax.SaveAt(ts=ts),
+            adjoint=self.adjoint,
+        )
+        return jnp.asarray(solution.stats["num_steps"], dtype=jnp.float32)
+
     def __call__(
         self,
         control_values: jax.Array,
@@ -238,9 +261,7 @@ class NeuralCDE(eqx.Module):
             ts = jnp.arange(length, dtype=control_values.dtype)
             dt0 = self._scaled_dt0_for_observation_grid(int(length))
             if self.control_interpolation == "hermite_cubic":
-                coeffs = diffrax.backward_hermite_coefficients(
-                    ts=ts, ys=control_values
-                )
+                coeffs = diffrax.backward_hermite_coefficients(ts=ts, ys=control_values)
                 control = diffrax.CubicInterpolation(ts, coeffs)
             elif self.control_interpolation == "linear":
                 control = diffrax.LinearInterpolation(ts, control_values)
@@ -254,3 +275,27 @@ class NeuralCDE(eqx.Module):
             if self.evolving_out:
                 return self._apply_readout(hidden)
             return self._apply_readout(hidden[-1:])[0]
+
+    def integration_steps(self, control_values: jax.Array) -> jax.Array:
+        length = control_values.shape[0]
+        if self.extrapolation_scheme is not None:
+            ts = jnp.linspace(0.0, 1.0, length, dtype=control_values.dtype)
+            assert self.n_recon is not None
+            control, _ = self.extrapolation_scheme.create_control(
+                ts, control_values, self.n_recon
+            )
+            return self._integration_steps_with_control(ts, control, dt0=self.dt0)
+
+        ts = jnp.arange(length, dtype=control_values.dtype)
+        dt0 = self._scaled_dt0_for_observation_grid(int(length))
+        if self.control_interpolation == "hermite_cubic":
+            coeffs = diffrax.backward_hermite_coefficients(ts=ts, ys=control_values)
+            control = diffrax.CubicInterpolation(ts, coeffs)
+        elif self.control_interpolation == "linear":
+            control = diffrax.LinearInterpolation(ts, control_values)
+        else:
+            raise ValueError(
+                f"Unknown control_interpolation={self.control_interpolation!r}. "
+                "Expected 'hermite_cubic' or 'linear'."
+            )
+        return self._integration_steps_with_control(ts, control, dt0=dt0)

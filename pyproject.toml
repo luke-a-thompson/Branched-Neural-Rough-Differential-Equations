@@ -20,6 +20,8 @@ dependencies = [
     "lovely-jax>=0.1.4",
     "diffrax-lowstorage",
     "georax",
+    "pysiglib[cuda]>=3.0.3",
+    "roughrax"
 ]
 
 [tool.uv.sources]
@@ -28,6 +30,9 @@ cyreal = { git = "https://github.com/luke-a-thompson/cyreal_dynamics.git", branc
 diffrax = { git = "https://github.com/sammccallum/diffrax", rev = "aeb1335b5a6278e85a270231e0f97b8db4453ae6" }
 diffrax-lowstorage = {git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git"}
 georax = {git = "https://github.com/luke-a-thompson/georax.git"}
+pysiglib = { path = "../pySigLibax" }
+pysiglib-cuda = { path = "../pySigLibax/plugins/cuda" }
+roughrax = { path = "../roughrax" }
 
 [project.scripts]
 train = "taming_the_ito_lyon.training.train_cli:main"

@@ -55,19 +55,14 @@ class StepsizeControllerType(StrEnum):
 
 
 class SolverType(StrEnum):
-    EES25 = "ees25"
     EES252N = "ees252n"
+    CFEES25 = "cfees25"
     TSIT5 = "tsit5"
-    BOSH3 = "bosh3"
-    DOPRI5 = "dopri5"
-    DOPRI8 = "dopri8"
     HEUN = "heun"
-    EULER = "euler"
 
 
 class AdjointType(StrEnum):
     RECURSIVE_CHECKPOINT = "recursive_checkpoint"
-    DIRECT = "direct"
     REVERSIBLE = "reversble"
 
 
