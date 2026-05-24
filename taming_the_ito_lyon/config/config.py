@@ -335,7 +335,7 @@ class MNRDEConfig(BaseModel):
         default=1,
         description=(
             "Deprecated compatibility option. Geometric M-NRDE now samples "
-            "VirtualBrownianTree controls on the data grid."
+            "fixed-grid Brownian controls directly."
         ),
     )
 

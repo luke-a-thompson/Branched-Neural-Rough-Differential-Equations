@@ -478,10 +478,10 @@ class MNDRE(eqx.Module):
             t1=ts[-1],
             dt0=None,
             y0=y0,
-            stepsize_controller=diffrax.StepTo(ts),
+            stepsize_controller=diffrax.StepTo(signature_ts),
             saveat=diffrax.SaveAt(ts=ts),
             adjoint=self.adjoint,
-            max_steps=int(ts.shape[0]) + 4,
+            max_steps=int(signature_ts.shape[0]) + 4,
         )
         assert solution.ys is not None
         return solution.ys, solution.stats

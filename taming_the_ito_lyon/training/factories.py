@@ -508,6 +508,40 @@ def create_dataloaders(
     return _make_loader(train), _make_loader(val), _make_loader(test)
 
 
+def _sample_brownian_controls_on_grid(
+    ts: jax.Array,
+    key: jax.Array,
+    *,
+    batch_size: int,
+    driver_dim: int,
+    anchor_at_basepoint: bool,
+) -> jax.Array:
+    import jax.numpy as jnp
+    import jax.random as jr
+
+    timesteps = int(ts.shape[0]) - 1
+    if timesteps <= 0:
+        raise ValueError(f"ts must have length >= 2, got {ts.shape[0]}")
+
+    dt = ts[1:] - ts[:-1]
+    increments = jr.normal(
+        key,
+        (int(batch_size), timesteps, int(driver_dim)),
+        dtype=ts.dtype,
+    ) * jnp.sqrt(dt)[None, :, None]
+    values = jnp.concatenate(
+        [
+            jnp.zeros((int(batch_size), 1, int(driver_dim)), dtype=ts.dtype),
+            jnp.cumsum(increments, axis=1),
+        ],
+        axis=1,
+    )
+    if anchor_at_basepoint:
+        values = values - values[:, :1]
+    times = jnp.broadcast_to(ts[None, :, None], (int(batch_size), ts.shape[0], 1))
+    return jnp.concatenate([times, values], axis=-1)
+
+
 def create_unconditional_control_sampler(
     *,
     driver_dim: int,
@@ -520,55 +554,14 @@ def create_unconditional_control_sampler(
     where the leading channel is `ts` and the remaining channels are the sampled
     driver values on the same grid.
     """
-    import diffrax
-    import jax.numpy as jnp
-
-    def with_time(ts: jax.Array, values: jax.Array) -> jax.Array:
-        return jnp.concatenate([ts[:, None], values], axis=-1)
-
-    def _anchor_at_basepoint(values: jax.Array) -> jax.Array:
-        """Anchor the path at the origin without changing its length.
-
-        Note: "basepoint augmentation" in the signature literature often means
-        *prepending an extra point* at the start of the path. In this codebase the
-        model/targets assume a fixed length `T`, so instead we simply translate the
-        path to start at 0 (which does not affect signatures, as they depend on
-        increments).
-        """
-        return values - values[:1]
-
     def sample(ts: jax.Array, key: jax.Array) -> jax.Array:
-        timesteps = int(ts.shape[0]) - 1
-        if timesteps <= 0:
-            raise ValueError(f"ts must have length >= 2, got {ts.shape[0]}")
-
-        dt = ts[1:] - ts[:-1]
-        brownian = diffrax.VirtualBrownianTree(
-            t0=ts[0],
-            t1=ts[-1],
-            tol=jnp.min(dt) / 2,
-            shape=jax.ShapeDtypeStruct(
-                (int(driver_dim),),
-                ts.dtype,
-            ),
-            key=key,
-        )
-
-        def scan_increment(_: None, interval: tuple[jax.Array, jax.Array]):
-            t0, t1 = interval
-            return None, brownian.evaluate(t0, t1)
-
-        _, increments = jax.lax.scan(scan_increment, None, (ts[:-1], ts[1:]))
-        values = jnp.concatenate(
-            [
-                jnp.zeros((1, int(driver_dim)), dtype=ts.dtype),
-                jnp.cumsum(increments, axis=0),
-            ],
-            axis=0,
-        )
-        if anchor_at_basepoint:
-            values = _anchor_at_basepoint(values)
-        return with_time(ts, values)
+        return _sample_brownian_controls_on_grid(
+            ts,
+            key,
+            batch_size=1,
+            driver_dim=driver_dim,
+            anchor_at_basepoint=anchor_at_basepoint,
+        )[0]
 
     return sample
 
@@ -585,16 +578,14 @@ def create_unconditional_control_sampler_batched(
     (batch_size, T, driver_dim + 1), where the leading channel is `ts` and the
     remaining channels are the sampled driver values on the same grid.
     """
-    import jax.random as jr
-
-    single_sampler = create_unconditional_control_sampler(
-        driver_dim=driver_dim,
-        anchor_at_basepoint=anchor_at_basepoint,
-    )
-
     def sample_batch(ts: jax.Array, key: jax.Array, batch_size: int) -> jax.Array:
-        keys = jr.split(key, batch_size)
-        return jax.vmap(lambda k: single_sampler(ts, k))(keys)
+        return _sample_brownian_controls_on_grid(
+            ts,
+            key,
+            batch_size=batch_size,
+            driver_dim=driver_dim,
+            anchor_at_basepoint=anchor_at_basepoint,
+        )
 
     # JIT this so unconditional mode doesn't run eager JAX work each step.
     # Compiles once per distinct (static) batch_size.
@@ -628,11 +619,7 @@ def create_grad_batch_loss_fns(
     )
 
     loss_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None
-    base_branched_loss_fn: (
-        Callable[[jax.Array, jax.Array, jax.Array | None, jax.Array | None], jax.Array]
-        | None
-    ) = None
-    sigker_branched_use_w = False
+    base_branched_loss_fn: Callable[..., jax.Array] | None = None
 
     match config.experiment_config.loss:
         case LossType.MSE:
@@ -670,23 +657,14 @@ def create_grad_batch_loss_fns(
                 hasattr(config.nn_config, "hopf_algebra")
                 and getattr(config.nn_config, "hopf_algebra") == HopfAlgebraType.MKW
             )
-            # Include the driver channel for rough-volatility datasets where we have W.
-            sigker_branched_use_w = bool(
-                config.experiment_config.dataset_name
-                in (
-                    Datasets.BLACK_SCHOLES,
-                    Datasets.BERGOMI,
-                    Datasets.ROUGH_BERGOMI,
-                    Datasets.SIMPLE_RBERGOMI,
-                )
-            )
             base_branched_loss_fn = branched_signature_kernel_score(
-                depth=5,
-                use_planar=use_planar,
+                # Keep pySigLib CUDA branched forward/backward inside kernel limits.
+                # SPD + time augmentation has dim=7; depth=3 fits the tree-count
+                # limit but the corrected CUDA backprop launch can fail.
+                depth=3,
+                use_planar=False,
                 use_time=True,
-                use_w=bool(sigker_branched_use_w),
                 x_dim=int(output_path_dim),
-                anchor_at_start=False,
                 prepend_zero_basepoint=True,
             )
         case _:
@@ -714,23 +692,17 @@ def create_grad_batch_loss_fns(
                 shape=(int(preds.shape[0]), int(target_b.shape[1]), *preds.shape[2:]),
                 method="linear",
             )
+        if config.experiment_config.loss == LossType.SIGKER_BRANCHED:
+            assert base_branched_loss_fn is not None
+            target_cov = (
+                gt_driver_b
+                if config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION
+                else None
+            )
+            return base_branched_loss_fn(preds, target_b, target_cov=target_cov)
         if use_spd:
             preds = _maybe_unvech_spd(preds)
             target_b = _maybe_unvech_spd(target_b)
-        if config.experiment_config.loss == LossType.SIGKER_BRANCHED:
-            assert base_branched_loss_fn is not None
-            if sigker_branched_use_w:
-                w_model = (
-                    control_values_b[..., 1]
-                    if int(control_values_b.shape[-1]) >= 2
-                    else control_values_b[..., 0]
-                )
-                return base_branched_loss_fn(
-                    preds, target_b, pred_aux=w_model, target_aux=gt_driver_b[..., 0]
-                )
-            if config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION:
-                return base_branched_loss_fn(preds, target_b, target_cov=gt_driver_b)
-            return base_branched_loss_fn(preds, target_b)
         assert loss_fn is not None
         return loss_fn(preds, target_b)
 
