@@ -5,6 +5,7 @@ from .config_options import (
     HiddenStateMode,
     ModelType,
     Optimizer,
+    RoughSolution,
     SolverType,
 )
 from .config import (
@@ -13,7 +14,7 @@ from .config import (
     NCDEConfig,
     LogNCDEConfig,
     NRDEConfig,
-    MNRDEConfig,
+    BNRDEConfig,
     MODEConfig,
     GRUConfig,
     LSTMConfig,
@@ -25,6 +26,7 @@ from .config import (
 __all__ = [
     "ModelType",
     "Optimizer",
+    "RoughSolution",
     "ExtrapolationSchemeType",
     "HiddenStateMode",
     "Datasets",
@@ -33,7 +35,7 @@ __all__ = [
     "NCDEConfig",
     "LogNCDEConfig",
     "NRDEConfig",
-    "MNRDEConfig",
+    "BNRDEConfig",
     "MODEConfig",
     "GRUConfig",
     "LSTMConfig",

@@ -19,11 +19,11 @@ from taming_the_ito_lyon.config.config_options import (
     Datasets,
     ExtrapolationSchemeType,
     HiddenStateMode,
-    HopfAlgebraType,
     LossType,
     ManifoldType,
     ModelType,
     Optimizer,
+    RoughSolution,
     SolverType,
     StepsizeControllerType,
     TrainingMode,
@@ -99,7 +99,7 @@ class ExperimentConfig(BaseModel):
                 ModelType.NCDE,
                 ModelType.LOG_NCDE,
                 ModelType.NRDE,
-                ModelType.MNRDE,
+                ModelType.BNRDE,
                 ModelType.GRU,
                 ModelType.LSTM,
                 ModelType.XLSTM,
@@ -107,7 +107,7 @@ class ExperimentConfig(BaseModel):
             ):
                 raise ValueError(
                     "extrapolation_scheme is only supported for model_type in "
-                    "{ncde, log_ncde, nrde, mnrde, gru, lstm, xlstm, stacked_xlstm}."
+                    "{ncde, log_ncde, nrde, bnrde, gru, lstm, xlstm, stacked_xlstm}."
                 )
         return self
 
@@ -143,7 +143,7 @@ class ExperimentConfig(BaseModel):
         ge=0.0,
         description=(
             "Weight for the Itô / branched level-2 distribution-matching MMD loss "
-            "(only applied for SIMPLE_RBERGOMI when model_type='mnrde' and hopf_algebra='gl')."
+            "(only applied to matching branched-signature experiments)."
         ),
     )
 
@@ -158,7 +158,6 @@ class ExperimentConfig(BaseModel):
 
     manifold: ManifoldType = Field(description="Manifold to use")
     hidden_state_mode: HiddenStateMode = Field(
-        default=HiddenStateMode.EUCLIDEAN,
         description="Hidden state space to use",
         validation_alias=AliasChoices("hidden_state_mode", "hidden_manifold"),
     )
@@ -214,9 +213,7 @@ class SolverConfig(BaseModel):
     stepsize_controller: StepsizeControllerType = Field(
         description="Stepsize controller to use"
     )
-    solver: SolverType = Field(
-        default=SolverType.TSIT5, description="ODE solver to use"
-    )
+    solver: SolverType = Field(description="ODE solver to use")
     adjoint: AdjointType = Field(
         default=AdjointType.RECURSIVE_CHECKPOINT,
         description="Adjoint method for backpropagation through the ODE solve",
@@ -300,8 +297,8 @@ class NRDEConfig(BaseModel):
     )
 
 
-class MNRDEConfig(BaseModel):
-    """Top-level M-NRDE configuration composed of model params."""
+class BNRDEConfig(BaseModel):
+    """Top-level BNRDE configuration composed of model params."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -316,13 +313,13 @@ class MNRDEConfig(BaseModel):
     vf_mlp_depth: PositiveInt = Field(
         description="Vector field MLP depth (number of hidden layers)"
     )
-    cde_state_dim: PositiveInt | None = Field(
+    hidden_size: PositiveInt | None = Field(
         default=None,
-        description="Euclidean hidden state dimension for M-NRDE",
+        description="Euclidean hidden state dimension for BNRDE",
     )
     initial_state_param_dim: PositiveInt | None = Field(
         default=None,
-        description="Initial-state parameter dimension for problem-manifold M-NRDE",
+        description="Initial-state parameter dimension for problem-manifold BNRDE",
     )
     out_size: PositiveInt = Field(description="Output channels predicted by readout")
 
@@ -331,26 +328,7 @@ class MNRDEConfig(BaseModel):
     signature_window_size: PositiveInt = Field(
         default=1, description="Data steps per log-signature window"
     )
-    virtual_brownian_refinement: PositiveInt = Field(
-        default=1,
-        description=(
-            "Deprecated compatibility option. Geometric M-NRDE now samples "
-            "fixed-grid Brownian controls directly."
-        ),
-    )
-
-    # Hopf algebra for M-NRDE
-    hopf_algebra: HopfAlgebraType = Field(description="Hopf algebra to use")
-
-    # Optional: which control channels (including time) are Brownian for Itô cov.
-    # Example: for (t, W, Z) use [1, 2]; for (t, RL, Z) use [2].
-    brownian_channels: list[int] | None = Field(
-        default=None,
-        description=(
-            "Indices of Brownian channels in the control (including time at index 0). "
-            "If None, all non-time channels are treated as Brownian."
-        ),
-    )
+    rough_solution: RoughSolution = Field(description="roughrax solution convention")
 
 
 class LogNCDEConfig(BaseModel):
@@ -469,7 +447,7 @@ class Config(BaseModel):
     ncde_config: NCDEConfig | None = None
     log_ncde_config: LogNCDEConfig | None = None
     nrde_config: NRDEConfig | None = None
-    mnrde_config: MNRDEConfig | None = None
+    bnrde_config: BNRDEConfig | None = None
     m_ode_config: MODEConfig | None = None
     gru_config: GRUConfig | None = None
     lstm_config: LSTMConfig | None = None
@@ -485,7 +463,7 @@ class Config(BaseModel):
             ModelType.NCDE: self.ncde_config,
             ModelType.LOG_NCDE: self.log_ncde_config,
             ModelType.NRDE: self.nrde_config,
-            ModelType.MNRDE: self.mnrde_config,
+            ModelType.BNRDE: self.bnrde_config,
             ModelType.M_ODE: self.m_ode_config,
             ModelType.GRU: self.gru_config,
             ModelType.LSTM: self.lstm_config,
@@ -504,7 +482,7 @@ class Config(BaseModel):
             self.ncde_config,
             self.log_ncde_config,
             self.nrde_config,
-            self.mnrde_config,
+            self.bnrde_config,
             self.m_ode_config,
             self.gru_config,
             self.lstm_config,
@@ -516,32 +494,32 @@ class Config(BaseModel):
             raise ValueError("Only one model config section should be provided")
 
         if self.experiment_config.hidden_state_mode == HiddenStateMode.PROBLEM_MANIFOLD:
-            if model_type != ModelType.MNRDE:
+            if model_type != ModelType.BNRDE:
                 raise ValueError(
                     "hidden_state_mode='problem_manifold' is currently supported "
-                    "only for model_type='mnrde'."
+                    "only for model_type='bnrde'."
                 )
-            assert self.mnrde_config is not None
-            if self.mnrde_config.initial_state_param_dim is None:
+            assert self.bnrde_config is not None
+            if self.bnrde_config.initial_state_param_dim is None:
                 raise ValueError(
                     "hidden_state_mode='problem_manifold' requires "
-                    "mnrde_config.initial_state_param_dim."
+                    "bnrde_config.initial_state_param_dim."
                 )
-            if self.mnrde_config.cde_state_dim is not None:
+            if self.bnrde_config.hidden_size is not None:
                 raise ValueError(
-                    "Use mnrde_config.initial_state_param_dim instead of "
-                    "cde_state_dim when hidden_state_mode='problem_manifold'."
+                    "Use bnrde_config.initial_state_param_dim instead of "
+                    "hidden_size when hidden_state_mode='problem_manifold'."
                 )
             if self.solver_config.solver not in (SolverType.CFEES25,):
                 raise ValueError(
                     "hidden_state_mode='problem_manifold' requires solver to be "
                     "'cfees25'."
                 )
-        elif model_type == ModelType.MNRDE:
-            assert self.mnrde_config is not None
-            if self.mnrde_config.cde_state_dim is None:
+        elif model_type == ModelType.BNRDE:
+            assert self.bnrde_config is not None
+            if self.bnrde_config.hidden_size is None:
                 raise ValueError(
-                    "mnrde_config.cde_state_dim is required when "
+                    "bnrde_config.hidden_size is required when "
                     "hidden_state_mode='euclidean'."
                 )
 
@@ -554,7 +532,7 @@ class Config(BaseModel):
         NCDEConfig
         | LogNCDEConfig
         | NRDEConfig
-        | MNRDEConfig
+        | BNRDEConfig
         | MODEConfig
         | GRUConfig
         | LSTMConfig
@@ -573,9 +551,9 @@ class Config(BaseModel):
         elif model_type == ModelType.NRDE:
             assert self.nrde_config is not None
             return self.nrde_config
-        elif model_type == ModelType.MNRDE:
-            assert self.mnrde_config is not None
-            return self.mnrde_config
+        elif model_type == ModelType.BNRDE:
+            assert self.bnrde_config is not None
+            return self.bnrde_config
         elif model_type == ModelType.M_ODE:
             assert self.m_ode_config is not None
             return self.m_ode_config

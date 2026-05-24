@@ -12,7 +12,7 @@ from taming_the_ito_lyon.config.config_options import ControlInterpolationType
 MODEL_NAME_LOOKUP: dict[str, str] = {
     "nrde": r"\gls{nrde}",
     "ncde": r"\gls{ncde}",
-    "mnrde": r"\gls{bnrde}",
+    "bnrde": r"\gls{bnrde}",
     "gru": r"\gls{gru}",
     "log_ncde": r"\gls{logncde}",
 }

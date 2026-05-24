@@ -197,6 +197,8 @@ def save_spd_covariance_eigenvalue_trajectory_single_plot(
             )
     ax.set_xlabel("time index", fontsize=16)
     ax.set_ylabel("eigenvalue", fontsize=16)
+    ax.set_ylim(0.25, 2.0)
+    ax.set_yticks(np.arange(0.25, 2.01, 0.25))
     ax.legend(loc="best", frameon=False, fontsize=16)
     ax.tick_params(axis="both", labelsize=16)
     fig.tight_layout()

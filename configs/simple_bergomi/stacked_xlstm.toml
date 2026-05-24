@@ -18,10 +18,12 @@ epochs = 100
 training_mode = "unconditional"
 
 manifold = "euclidean"
+hidden_state_mode = "euclidean"
 evolving_out = true
 
 [solver_config]
 stepsize_controller = "pid"
+solver = "tsit5"
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4

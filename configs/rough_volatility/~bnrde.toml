@@ -1,36 +1,38 @@
 [experiment_config]
-model_type = "mnrde"
-dataset_name = "simple_rbergomi"
+model_type = "bnrde"
+dataset_name = "rough_bergomi"
 
 # Optimizer
 optimizer = "adamw"
-learning_rate = 3e-4
+learning_rate = 1e-4
 weight_decay = 0.000001
 max_grad_norm = 1.0
 
 # Training
-loss = "sigker_branched"
+loss = "sigker"
 seed = 1
 batch_size = 1024
 epochs = 100
 
 # Training mode
 training_mode = "unconditional"
-# Unconditional generation always uses a single Brownian driver W (time is prepended).
+# Unconditional generation samples a Brownian motion with this many channels.
 
 manifold = "euclidean"
+hidden_state_mode = "euclidean"
 evolving_out = true
 
 [solver_config]
 stepsize_controller = "pid"
+solver = "tsit5"
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
-[mnrde_config]
+[bnrde_config]
 
-# M-NRDE model parameters
-cde_state_dim = 32
+# BNRDE model parameters
+hidden_size = 32
 init_hidden_dim = 32
 vf_hidden_dim = 32
 initial_cond_mlp_depth = 2
@@ -41,4 +43,4 @@ out_size = 1
 signature_depth = 2
 signature_window_size = 16
 
-hopf_algebra = "gl"
+rough_solution = "ito"

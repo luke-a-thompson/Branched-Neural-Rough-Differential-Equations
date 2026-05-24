@@ -1,5 +1,5 @@
 [experiment_config]
-model_type = "mnrde"
+model_type = "bnrde"
 dataset_name = "spd_wishart_diffusion"
 
 # Optimizer
@@ -11,7 +11,7 @@ max_grad_norm = 1.0
 # Training
 loss = "sigker_branched"
 seed = 1
-batch_size = 8
+batch_size = 16
 epochs = 16
 early_stopping_patience = 8
 
@@ -30,9 +30,9 @@ rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
-[mnrde_config]
+[bnrde_config]
 
-# Geometric M-NRDE model parameters
+# BNRDE model parameters
 # Direct SPD(3) hidden/output state.
 initial_state_param_dim = 6
 init_hidden_dim = 32
@@ -44,6 +44,5 @@ out_size = 6
 # Log-signature configuration
 signature_depth = 2
 signature_window_size = 8
-virtual_brownian_refinement = 1
 
-hopf_algebra = "mkw"
+rough_solution = "ito"

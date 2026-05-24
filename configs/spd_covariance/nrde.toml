@@ -3,7 +3,7 @@ model_type = "nrde"
 dataset_name = "spd_wishart_diffusion"
 
 # Optimizer
-optimizer = "adamw"
+optimizer = "muon"
 learning_rate = 5e-4
 weight_decay = 0.000001
 max_grad_norm = 1.0
@@ -19,17 +19,19 @@ early_stopping_patience = 3
 training_mode = "unconditional"
 
 manifold = "euclidean"
+hidden_state_mode = "euclidean"
 evolving_out = true
 
 [solver_config]
-stepsize_controller = "pid"
+stepsize_controller = "constant"
+solver = "heun"
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
 [nrde_config]
 
-# M-NRDE model parameters
+# BNRDE model parameters
 cde_state_dim = 32
 init_hidden_dim = 32
 vf_hidden_dim = 32
@@ -39,4 +41,4 @@ out_size = 6
 
 # Log-signature configuration
 signature_depth = 2
-signature_window_size = 32
+signature_window_size = 8

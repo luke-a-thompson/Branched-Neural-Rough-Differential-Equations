@@ -131,7 +131,7 @@ def _select_example_split(
 if __name__ == "__main__":
     from taming_the_ito_lyon.config.config import load_toml_config
 
-    config = load_toml_config("configs/rough_volatility/~m_nrde.toml")
+    config = load_toml_config("configs/rough_volatility/~bnrde.toml")
     dataset = RoughVolatilityDataset(config, "train")
     print(dataset._driver.shape)
     print(dataset._solution.shape)

@@ -1,7 +1,7 @@
 from .ncde import NeuralCDE
 from .log_ncde import LogNCDE
 from .nrde import NeuralRDE
-from .m_nrde import MNDRE
+from .bnrde import BNRDE
 from .m_ode import ManifoldNeuralODE
 from .gru import GRU
 from .lstm import LSTM
@@ -19,7 +19,7 @@ Model = (
     NeuralCDE
     | LogNCDE
     | NeuralRDE
-    | MNDRE
+    | BNRDE
     | ManifoldNeuralODE
     | GRU
     | LSTM
@@ -32,7 +32,7 @@ __all__ = [
     "NeuralCDE",
     "LogNCDE",
     "NeuralRDE",
-    "MNDRE",
+    "BNRDE",
     "ManifoldNeuralODE",
     "GRU",
     "LSTM",

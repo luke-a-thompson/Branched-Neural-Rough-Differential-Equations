@@ -1,5 +1,5 @@
 [experiment_config]
-model_type = "mnrde"
+model_type = "bnrde"
 dataset_name = "synthetic_gbm"
 synthetic_gbm_dim = 2
 
@@ -20,16 +20,18 @@ early_stopping_patience = 5
 training_mode = "conditional"
 
 manifold = "euclidean"
+hidden_state_mode = "euclidean"
 evolving_out = true
 
 [solver_config]
 stepsize_controller = "constant"
+solver = "tsit5"
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
-[mnrde_config]
-cde_state_dim = 32
+[bnrde_config]
+hidden_size = 32
 init_hidden_dim = 32
 vf_hidden_dim = 32
 initial_cond_mlp_depth = 2
@@ -37,4 +39,4 @@ vf_mlp_depth = 2
 out_size = 2
 signature_depth = 2
 signature_window_size = 32
-hopf_algebra = "mkw"
+rough_solution = "ito"

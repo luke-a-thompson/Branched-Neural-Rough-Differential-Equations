@@ -1,4 +1,4 @@
-Synthetic GBM end-to-end benchmark configs for M-NRDE (`bnrde`).
+Synthetic GBM end-to-end benchmark configs for BNRDE (`bnrde`).
 
 Run the full sweep with:
 

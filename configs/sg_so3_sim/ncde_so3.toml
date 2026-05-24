@@ -27,10 +27,12 @@ training_mode = "conditional"
 # unconditional_hurst = 0.1          # used for "fbm"/"rl"
 
 manifold = "so3"
+hidden_state_mode = "euclidean"
 evolving_out = true
 
 [solver_config]
 stepsize_controller = "pid"
+solver = "tsit5"
 rtol = 1e-2
 atol = 1e-3
 dtmin = 1e-4

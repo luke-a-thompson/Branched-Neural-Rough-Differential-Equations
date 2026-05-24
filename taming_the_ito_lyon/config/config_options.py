@@ -29,7 +29,7 @@ class ModelType(StrEnum):
     NCDE = "ncde"
     LOG_NCDE = "log_ncde"
     NRDE = "nrde"
-    MNRDE = "mnrde"
+    BNRDE = "bnrde"
     M_ODE = "m_ode"
     GRU = "gru"
     LSTM = "lstm"
@@ -47,6 +47,11 @@ class HopfAlgebraType(StrEnum):
     SHUFFLE = "shuffle"
     GL = "gl"
     MKW = "mkw"
+
+
+class RoughSolution(StrEnum):
+    ITO = "ito"
+    STRATONOVICH = "stratonovich"
 
 
 class StepsizeControllerType(StrEnum):

@@ -10,7 +10,7 @@ from taming_the_ito_lyon.training.results_gathering_fns import ResultsDict
 def test_build_training_metrics_payload_separates_loss_and_metric() -> None:
     payload = build_training_metrics_payload(
         run_dirname="demo_run",
-        model_name="mnrde",
+        model_name="bnrde",
         num_params=123,
         final_epoch=2,
         best_epoch=1,
@@ -54,7 +54,7 @@ def test_write_test_metrics_uses_nested_schema(tmp_path) -> None:
 
     metrics_path = write_test_metrics(
         run_dir=str(run_dir),
-        model_name="mnrde",
+        model_name="bnrde",
         num_params=123,
         inference_elapsed=0.75,
         loss_label="sigker_branched",
@@ -88,7 +88,7 @@ def test_write_test_metrics_multi_seed_writes_mean_and_sample_std(tmp_path) -> N
 
     write_test_metrics(
         run_dir=str(run_dir),
-        model_name="mnrde",
+        model_name="bnrde",
         num_params=123,
         inference_elapsed=0.75,
         loss_label="sigker_branched",
@@ -104,7 +104,7 @@ def test_write_test_metrics_multi_seed_writes_mean_and_sample_std(tmp_path) -> N
     )
     metrics_path = write_test_metrics(
         run_dir=str(run_dir),
-        model_name="mnrde",
+        model_name="bnrde",
         num_params=123,
         inference_elapsed=0.75,
         loss_label="sigker_branched",

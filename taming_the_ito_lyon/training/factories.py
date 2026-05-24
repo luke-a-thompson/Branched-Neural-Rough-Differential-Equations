@@ -14,10 +14,10 @@ from stochastax.manifolds.spd import SPDManifold
 from taming_the_ito_lyon.config import (
     Config,
     Datasets,
+    BNRDEConfig,
     GRUConfig,
     LogNCDEConfig,
     LSTMConfig,
-    MNRDEConfig,
     MODEConfig,
     NCDEConfig,
     NRDEConfig,
@@ -28,16 +28,15 @@ from taming_the_ito_lyon.config import (
 from taming_the_ito_lyon.config.config_options import (
     AdjointType,
     HiddenStateMode,
-    HopfAlgebraType,
     LossType,
     ManifoldType,
     SolverType,
     StepsizeControllerType,
 )
 from taming_the_ito_lyon.models import (
+    BNRDE,
     GRU,
     LSTM,
-    MNDRE,
     XLSTM,
     LogNCDE,
     ManifoldNeuralODE,
@@ -73,7 +72,7 @@ def _maybe_create_extrapolation_scheme(
             NCDEConfig,
             LogNCDEConfig,
             NRDEConfig,
-            MNRDEConfig,
+            BNRDEConfig,
             GRUConfig,
             LSTMConfig,
             XLSTMConfig,
@@ -257,16 +256,15 @@ def create_model(
                 n_recon=config.experiment_config.n_recon,
                 key=model_key,
             )
-        case MNRDEConfig():
-            brownian_channels = config.nn_config.brownian_channels
+        case BNRDEConfig():
             initial_state_param_dim = (
                 config.nn_config.initial_state_param_dim
                 if config.experiment_config.hidden_state_mode
                 == HiddenStateMode.PROBLEM_MANIFOLD
-                else config.nn_config.cde_state_dim
+                else config.nn_config.hidden_size
             )
             assert initial_state_param_dim is not None
-            return MNDRE(
+            return BNRDE(
                 input_path_dim=input_path_dim,
                 initial_state_param_dim=initial_state_param_dim,
                 initial_hidden_dim=config.nn_config.init_hidden_dim,
@@ -278,15 +276,11 @@ def create_model(
                 signature_window_size=config.nn_config.signature_window_size,
                 data_manifold=manifold,
                 hidden_state_mode=config.experiment_config.hidden_state_mode,
-                hopf_algebra_type=config.nn_config.hopf_algebra,
+                rough_solution=config.nn_config.rough_solution,
                 solver=solver,
                 adjoint=adjoint,
-                stepsize_controller=stepsize_controller,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
-                brownian_channels=brownian_channels,
-                brownian_corr=0.0,
-                virtual_brownian_refinement=config.nn_config.virtual_brownian_refinement,
                 key=model_key,
             )
         case MODEConfig():
@@ -652,11 +646,6 @@ def create_grad_batch_loss_fns(
                     "output_path_dim must be provided when loss_type is SIGKER_BRANCHED so the "
                     "Hopf algebra can be constructed outside of jit."
                 )
-            # Use planar branched signature iff the configured Hopf algebra is MKW.
-            use_planar = bool(
-                hasattr(config.nn_config, "hopf_algebra")
-                and getattr(config.nn_config, "hopf_algebra") == HopfAlgebraType.MKW
-            )
             base_branched_loss_fn = branched_signature_kernel_score(
                 # Keep pySigLib CUDA branched forward/backward inside kernel limits.
                 # SPD + time augmentation has dim=7; depth=3 fits the tree-count

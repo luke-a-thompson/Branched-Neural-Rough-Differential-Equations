@@ -8,12 +8,12 @@ import jax.random as jr
 
 from stochastax.manifolds import EuclideanSpace
 
-from taming_the_ito_lyon.config.config_options import HopfAlgebraType
-from taming_the_ito_lyon.models import MNDRE
+from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolution
+from taming_the_ito_lyon.models import BNRDE
 
 
-def test_mnrde_zero_basepoint_padding_uses_uniform_synthetic_grid() -> None:
-    model = MNDRE(
+def test_bnrde_zero_basepoint_padding_uses_uniform_synthetic_grid() -> None:
+    model = BNRDE(
         input_path_dim=3,
         initial_state_param_dim=8,
         output_path_dim=2,
@@ -24,9 +24,9 @@ def test_mnrde_zero_basepoint_padding_uses_uniform_synthetic_grid() -> None:
         signature_depth=2,
         signature_window_size=2,
         data_manifold=EuclideanSpace,
-        hopf_algebra_type=HopfAlgebraType.SHUFFLE,
+        hidden_state_mode=HiddenStateMode.EUCLIDEAN,
+        rough_solution=RoughSolution.STRATONOVICH,
         solver=diffrax.Tsit5(),
-        stepsize_controller=diffrax.ConstantStepSize(),
         evolving_out=True,
         prepend_zero_basepoint=True,
         key=jr.PRNGKey(0),

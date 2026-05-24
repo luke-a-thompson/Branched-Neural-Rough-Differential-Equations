@@ -209,7 +209,7 @@ def _select_batch_split(
 if __name__ == "__main__":
     from taming_the_ito_lyon.config.config import load_toml_config
 
-    config = load_toml_config("configs/spd_covariance/~m_nrde_wishart.toml")
+    config = load_toml_config("configs/spd_covariance/bnrde.toml")
     dataset = SPDWishartDiffusionDataset(config, "train")
     print(dataset._driver_np.shape)
     print(dataset._solution_np.shape)

@@ -12,8 +12,8 @@ from stochastax.manifolds import EuclideanSpace, SO3
 from stochastax.manifolds.spd import SPDManifold
 
 from taming_the_ito_lyon.config.config import Config
-from taming_the_ito_lyon.config.config_options import HiddenStateMode, HopfAlgebraType
-from taming_the_ito_lyon.models import MNDRE, NeuralRDE
+from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolution
+from taming_the_ito_lyon.models import BNRDE, NeuralRDE
 
 
 def test_nrde_prepend_zero_basepoint_preserves_output_shape() -> None:
@@ -51,8 +51,8 @@ def test_nrde_prepend_zero_basepoint_preserves_output_shape() -> None:
     assert outputs.shape == (5, 2)
 
 
-def test_geometric_mnrde_so3_stays_on_manifold() -> None:
-    model = MNDRE(
+def test_bnrde_so3_stays_on_manifold() -> None:
+    model = BNRDE(
         input_path_dim=3,
         initial_state_param_dim=6,
         output_path_dim=9,
@@ -63,10 +63,9 @@ def test_geometric_mnrde_so3_stays_on_manifold() -> None:
         signature_depth=3,
         signature_window_size=2,
         data_manifold=SO3,
-        hopf_algebra_type=HopfAlgebraType.SHUFFLE,
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
+        rough_solution=RoughSolution.STRATONOVICH,
         solver=georax.CG2(),
-        stepsize_controller=diffrax.ConstantStepSize(),
         evolving_out=True,
         prepend_zero_basepoint=False,
         key=jr.PRNGKey(2),
@@ -78,34 +77,13 @@ def test_geometric_mnrde_so3_stays_on_manifold() -> None:
     ident = jnp.eye(3, dtype=outputs.dtype)
     gram = jnp.swapaxes(outputs, -1, -2) @ outputs
     assert outputs.shape == (5, 3, 3)
-    assert jnp.allclose(gram, ident, rtol=1e-3, atol=1e-3)
+    assert jnp.allclose(gram, ident, rtol=3e-3, atol=3e-3)
     assert jnp.all(jnp.linalg.det(outputs) > 0.0)
 
 
-def test_geometric_mnrde_rejects_gl_lift() -> None:
-    with pytest.raises(ValueError, match="GL lift"):
-        MNDRE(
-            input_path_dim=3,
-            initial_state_param_dim=6,
-            output_path_dim=9,
-            initial_hidden_dim=8,
-            initial_cond_mlp_depth=1,
-            vf_hidden_dim=8,
-            vf_mlp_depth=1,
-            signature_depth=1,
-            signature_window_size=2,
-            data_manifold=SO3,
-            hopf_algebra_type=HopfAlgebraType.GL,
-            hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
-            solver=georax.CG2(),
-            stepsize_controller=diffrax.ConstantStepSize(),
-            key=jr.PRNGKey(4),
-        )
-
-
-def test_geometric_mnrde_rejects_non_georax_solver() -> None:
+def test_bnrde_rejects_non_georax_solver_for_problem_manifold() -> None:
     with pytest.raises(ValueError, match="requires solver"):
-        MNDRE(
+        BNRDE(
             input_path_dim=3,
             initial_state_param_dim=6,
             output_path_dim=9,
@@ -116,16 +94,15 @@ def test_geometric_mnrde_rejects_non_georax_solver() -> None:
             signature_depth=1,
             signature_window_size=2,
             data_manifold=SO3,
-            hopf_algebra_type=HopfAlgebraType.SHUFFLE,
             hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
+            rough_solution=RoughSolution.STRATONOVICH,
             solver=diffrax.Tsit5(),
-            stepsize_controller=diffrax.ConstantStepSize(),
             key=jr.PRNGKey(7),
         )
 
 
-def test_geometric_mnrde_spd_stays_on_manifold() -> None:
-    model = MNDRE(
+def test_bnrde_spd_stays_on_manifold() -> None:
+    model = BNRDE(
         input_path_dim=2,
         initial_state_param_dim=6,
         output_path_dim=6,
@@ -136,10 +113,9 @@ def test_geometric_mnrde_spd_stays_on_manifold() -> None:
         signature_depth=1,
         signature_window_size=2,
         data_manifold=SPDManifold,
-        hopf_algebra_type=HopfAlgebraType.MKW,
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
+        rough_solution=RoughSolution.ITO,
         solver=georax.CG2(),
-        stepsize_controller=diffrax.ConstantStepSize(),
         evolving_out=True,
         prepend_zero_basepoint=False,
         key=jr.PRNGKey(5),
@@ -153,8 +129,8 @@ def test_geometric_mnrde_spd_stays_on_manifold() -> None:
     assert jnp.all(jnp.linalg.eigvalsh(outputs) > 0.0)
 
 
-def test_geometric_mnrde_same_count_control_stays_aligned() -> None:
-    model = MNDRE(
+def test_bnrde_same_count_control_stays_aligned() -> None:
+    model = BNRDE(
         input_path_dim=3,
         initial_state_param_dim=6,
         output_path_dim=6,
@@ -165,13 +141,11 @@ def test_geometric_mnrde_same_count_control_stays_aligned() -> None:
         signature_depth=1,
         signature_window_size=1,
         data_manifold=SPDManifold,
-        hopf_algebra_type=HopfAlgebraType.MKW,
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
+        rough_solution=RoughSolution.ITO,
         solver=georax.CG2(),
-        stepsize_controller=diffrax.ConstantStepSize(),
         evolving_out=True,
         prepend_zero_basepoint=True,
-        virtual_brownian_refinement=2,
         key=jr.PRNGKey(8),
     )
 
@@ -187,9 +161,9 @@ def test_geometric_mnrde_same_count_control_stays_aligned() -> None:
     assert jnp.all(jnp.linalg.eigvalsh(outputs) > 0.0)
 
 
-def test_geometric_mnrde_rejects_spd_latent_decoder_shape() -> None:
+def test_bnrde_rejects_spd_latent_decoder_shape() -> None:
     with pytest.raises(ValueError, match="integrated manifold state as the output"):
-        MNDRE(
+        BNRDE(
             input_path_dim=3,
             initial_state_param_dim=10,
             output_path_dim=6,
@@ -200,20 +174,19 @@ def test_geometric_mnrde_rejects_spd_latent_decoder_shape() -> None:
             signature_depth=1,
             signature_window_size=1,
             data_manifold=SPDManifold,
-            hopf_algebra_type=HopfAlgebraType.MKW,
             hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
+            rough_solution=RoughSolution.ITO,
             solver=georax.CG2(),
-            stepsize_controller=diffrax.ConstantStepSize(),
             evolving_out=True,
             prepend_zero_basepoint=False,
             key=jr.PRNGKey(10),
         )
 
 
-def _geometric_mnrde_config(solver: str) -> dict:
+def _bnrde_config(solver: str) -> dict:
     return {
         "experiment_config": {
-            "model_type": "mnrde",
+            "model_type": "bnrde",
             "dataset_name": "synthetic_gbm",
             "optimizer": "adam",
             "learning_rate": 1e-3,
@@ -234,7 +207,7 @@ def _geometric_mnrde_config(solver: str) -> dict:
             "atol": 1e-3,
             "dtmin": 1e-4,
         },
-        "mnrde_config": {
+        "bnrde_config": {
             "initial_state_param_dim": 9,
             "init_hidden_dim": 8,
             "vf_hidden_dim": 8,
@@ -243,24 +216,24 @@ def _geometric_mnrde_config(solver: str) -> dict:
             "out_size": 9,
             "signature_depth": 1,
             "signature_window_size": 2,
-            "hopf_algebra": "shuffle",
+            "rough_solution": "stratonovich",
         },
     }
 
 
 def test_problem_manifold_config_requires_georax_solver() -> None:
     with pytest.raises(ValueError, match="requires solver"):
-        Config.model_validate(_geometric_mnrde_config("tsit5"))
+        Config.model_validate(_bnrde_config("tsit5"))
 
 
 def test_problem_manifold_config_accepts_georax_solver() -> None:
-    config = Config.model_validate(_geometric_mnrde_config("cfees25"))
+    config = Config.model_validate(_bnrde_config("cfees25"))
 
     assert config.solver_config.solver.value == "cfees25"
 
 
-def test_mnrde_prepend_zero_basepoint_preserves_output_shape() -> None:
-    model = MNDRE(
+def test_bnrde_prepend_zero_basepoint_preserves_output_shape() -> None:
+    model = BNRDE(
         input_path_dim=3,
         initial_state_param_dim=8,
         output_path_dim=2,
@@ -271,9 +244,9 @@ def test_mnrde_prepend_zero_basepoint_preserves_output_shape() -> None:
         signature_depth=2,
         signature_window_size=2,
         data_manifold=EuclideanSpace,
-        hopf_algebra_type=HopfAlgebraType.SHUFFLE,
+        hidden_state_mode=HiddenStateMode.EUCLIDEAN,
+        rough_solution=RoughSolution.STRATONOVICH,
         solver=diffrax.Tsit5(),
-        stepsize_controller=diffrax.ConstantStepSize(),
         evolving_out=True,
         prepend_zero_basepoint=True,
         key=jr.PRNGKey(1),

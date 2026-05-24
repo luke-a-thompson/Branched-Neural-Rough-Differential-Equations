@@ -7,7 +7,7 @@ Simple GRU model with the same high-level interface as the CDE/RDE models:
   reconstruction + future, and we evaluate it at `ts` to obtain a discrete sequence.
 
 Additionally supports a Stochastax manifold, retracting the hidden state and the
-readout outputs (mirroring the behavior in `m_nrde.py`).
+readout outputs (mirroring the behavior in `bnrde.py`).
 """
 
 from __future__ import annotations

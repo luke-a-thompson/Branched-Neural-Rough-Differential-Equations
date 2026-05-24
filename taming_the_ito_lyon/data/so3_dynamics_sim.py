@@ -184,7 +184,7 @@ class SO3DynamicsSim(DatasetProtocol):
 if __name__ == "__main__":
     from taming_the_ito_lyon.config.config import load_toml_config
 
-    config = load_toml_config("configs/sg_so3_sim/m_nrde_mlp.toml")
+    config = load_toml_config("configs/sg_so3_sim/nrde.toml")
     dataset = SO3DynamicsSim(config, "train")
     print(dataset._driver_np.shape)
     print(dataset._solution_np.shape)

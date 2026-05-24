@@ -67,7 +67,7 @@ def _effective_timesteps_for_model(config: Config, timesteps: int) -> int:
     if config.experiment_config.model_type not in (
         ModelType.LOG_NCDE,
         ModelType.NRDE,
-        ModelType.MNRDE,
+        ModelType.BNRDE,
     ):
         return int(timesteps)
 
@@ -156,12 +156,11 @@ def build_runtime(config: Config, loader_key: jax.Array) -> ExperimentRuntime:
         output_head_dim = 6 if is_so3_rge else int(shape_batch["solution"].shape[-1])
 
     # In unconditional mode, the model consumes a sampled Brownian control with time
-    # prepended. For Wishart/SPD experiments, a 1D driver is often too restrictive
-    # (it yields rank-1 quadratic variation in vech-space), so for MNRDE we use a
-    # higher-dimensional latent Brownian by default.
+    # prepended. For Wishart/SPD experiments, a 1D driver is often too restrictive,
+    # so for BNRDE we use a higher-dimensional latent Brownian by default.
     if mode == TrainingMode.UNCONDITIONAL:
         driver_dim = 1
-        if config.experiment_config.model_type == ModelType.MNRDE:
+        if config.experiment_config.model_type == ModelType.BNRDE:
             driver_dim = int(output_head_dim)
         input_path_dim = int(driver_dim) + 1  # (t, W^driver_dim)
     elif config.experiment_config.extrapolation_scheme is not None:
