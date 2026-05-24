@@ -449,6 +449,7 @@ def run_test(
             inference_elapsed=inference_elapsed,
             loss_label=runtime.loss_label,
             eval_metric_name=eval_metric_name,
+            test_loss=test_loss,
             test_eval_metric=test_eval_metric,
             test_results_dict=test_results_dict,
             checkpoint_path=checkpoint_path,

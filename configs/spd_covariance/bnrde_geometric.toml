@@ -3,7 +3,7 @@ model_type = "mnrde"
 dataset_name = "spd_wishart_diffusion"
 
 # Optimizer
-optimizer = "adamw"
+optimizer = "muon"
 learning_rate = 5e-4
 weight_decay = 0.000001
 max_grad_norm = 1.0

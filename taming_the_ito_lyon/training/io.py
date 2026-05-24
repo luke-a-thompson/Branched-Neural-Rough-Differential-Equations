@@ -274,6 +274,7 @@ def write_test_metrics(
     inference_elapsed: float,
     loss_label: str,
     eval_metric_name: str,
+    test_loss: float,
     test_eval_metric: float,
     test_results_dict: ResultsDict,
     checkpoint_path: str,
@@ -302,7 +303,7 @@ def write_test_metrics(
         "test": {
             "loss": {
                 "name": loss_label,
-                "value": float(test_eval_metric),
+                "value": float(test_loss),
                 "unit": "",
                 "scale": 1.0,
             },

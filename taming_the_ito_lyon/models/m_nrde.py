@@ -221,6 +221,7 @@ class MNDRE(eqx.Module):
     hidden_manifold: type[Manifold] = eqx.field(static=True)
     hidden_state_mode: HiddenStateMode = eqx.field(static=True)
     geometry: georax.Manifold | None
+    rough_solution: str = eqx.field(static=True)
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     signature_depth: int = eqx.field(static=True)
     signature_window_size: int = eqx.field(static=True)
@@ -339,6 +340,12 @@ class MNDRE(eqx.Module):
             None
             if hidden_state_mode == HiddenStateMode.EUCLIDEAN
             else _georax_geometry_for_manifold(data_manifold, initial_state_param_dim)
+        )
+        self.rough_solution = (
+            "ito"
+            if hidden_state_mode == HiddenStateMode.PROBLEM_MANIFOLD
+            and hopf_algebra_type == HopfAlgebraType.MKW
+            else "stratonovich"
         )
         if self.geometry is not None:
             expected_output_dim = (
@@ -464,7 +471,7 @@ class MNDRE(eqx.Module):
             driver,
             signature_ts,
             depth=int(self.signature_depth),
-            solution="stratonovich",
+            solution=self.rough_solution,
         )
 
         def vector_field(y: jax.Array) -> jax.Array:
@@ -495,7 +502,13 @@ class MNDRE(eqx.Module):
                 return SO3.retract(raw.reshape(self.cde_func.state_shape))
             return SO3.retract(raw)
         if self.data_manifold is SPDManifold:
-            return SPDManifold.retract(SPDManifold.unvech(raw))
+            sym = SPDManifold.unvech(raw)
+            sym = 0.5 * (sym + jnp.swapaxes(sym, -1, -2))
+            evals, evecs = jnp.linalg.eigh(sym)
+            evals = jnp.clip(evals, -8.0, 8.0)
+            return (evecs * jnp.exp(evals)[..., None, :]) @ jnp.swapaxes(
+                evecs, -1, -2
+            )
         raise ValueError(
             "Could not map initial condition to the problem manifold. "
             f"Got raw initial shape {raw.shape}."
