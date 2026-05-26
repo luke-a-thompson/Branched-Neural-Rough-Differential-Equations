@@ -3,7 +3,6 @@ from collections.abc import Callable
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-import equinox as eqx
 import optax
 from cyreal.loader import DataLoader, _LoaderState
 from tqdm.auto import tqdm
@@ -175,55 +174,3 @@ def run_eval_epoch(
         config=runtime.config,
     )
     return avg_loss, results_dict, loader_state
-
-
-def average_integration_steps(
-    runtime: ExperimentRuntime,
-    model: Model,
-    loader: DataLoader,
-    iterate: Callable[
-        [_LoaderState], tuple[dict[str, jax.Array], _LoaderState, jax.Array]
-    ],
-    loader_state: _LoaderState,
-    epoch_key: jax.Array | None,
-) -> dict[str, float | int] | None:
-    """Average per-path Diffrax step counts over one loader pass."""
-    if not callable(getattr(model, "integration_steps", None)):
-        return None
-
-    @eqx.filter_jit
-    def integration_steps_batch(control_values_b: jax.Array, model: Model) -> jax.Array:
-        return jax.vmap(lambda x: model.integration_steps(x))(control_values_b)
-
-    total_steps = 0.0
-    total_paths = 0
-    for step_idx in range(loader.steps_per_epoch):
-        batch, loader_state, _ = iterate(loader_state)
-        if runtime.mode == TrainingMode.UNCONDITIONAL:
-            if epoch_key is None or runtime.unconditional_control_sampler is None:
-                raise ValueError(
-                    "epoch_key and unconditional_control_sampler required for UNCONDITIONAL"
-                )
-            step_key = jr.fold_in(epoch_key, step_idx)
-            control_values_b = runtime.unconditional_control_sampler(
-                runtime.ts_full, step_key, runtime.batch_size
-            )
-        else:
-            control_values_b = batch["driver"]
-
-        control_values_b, _, _ = trim_time_aligned_batch(
-            runtime,
-            control_values_b,
-            batch["solution"],
-            batch["driver"],
-        )
-        step_counts = integration_steps_batch(control_values_b, model)
-        total_steps += float(jax.device_get(jnp.sum(step_counts)))
-        total_paths += int(step_counts.shape[0])
-
-    if total_paths == 0:
-        return None
-    return {
-        "average_num_steps": float(total_steps / float(total_paths)),
-        "num_counted_paths": int(total_paths),
-    }

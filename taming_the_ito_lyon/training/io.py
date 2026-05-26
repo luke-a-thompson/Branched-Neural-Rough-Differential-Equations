@@ -126,7 +126,6 @@ def build_training_metrics_payload(
     test_eval_metric: float,
     test_results_dict: ResultsDict,
     xla_scratch_size_mib: float | None = None,
-    integration_stats: dict[str, float | int] | None = None,
 ) -> dict[str, object]:
     train_history = [float(v) for v in train_loss_history]
     val_history = [float(v) for v in val_loss_history]
@@ -151,7 +150,6 @@ def build_training_metrics_payload(
         "memory": {
             "xla_scratch_size_mib": xla_scratch_size_mib,
         },
-        "integration": integration_stats,
         "train": {
             "loss": {
                 "name": loss_label,
@@ -220,7 +218,6 @@ def finalize_training_run(
     test_eval_metric: float,
     test_results_dict: ResultsDict,
     xla_scratch_size_mib: float | None = None,
-    integration_stats: dict[str, float | int] | None = None,
 ) -> str:
     run_dir = os.path.join("saved_models", run_dirname)
     os.makedirs(run_dir, exist_ok=True)
@@ -258,7 +255,6 @@ def finalize_training_run(
         test_eval_metric=test_eval_metric,
         test_results_dict=test_results_dict,
         xla_scratch_size_mib=xla_scratch_size_mib,
-        integration_stats=integration_stats,
     )
     with open(metrics_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
@@ -281,7 +277,6 @@ def write_test_metrics(
     metrics_name: str = "test_metrics.json",
     metrics_seed: int | None = None,
     xla_scratch_size_mib: float | None = None,
-    integration_stats: dict[str, float | int] | None = None,
 ) -> str:
     metrics_path = os.path.join(run_dir, metrics_name)
     metrics = {
@@ -299,7 +294,6 @@ def write_test_metrics(
         "memory": {
             "xla_scratch_size_mib": xla_scratch_size_mib,
         },
-        "integration": integration_stats,
         "test": {
             "loss": {
                 "name": loss_label,
@@ -341,7 +335,6 @@ def write_test_metrics(
     combined_metrics["run"] = metrics["run"]
     combined_metrics["model"] = metrics["model"]
     combined_metrics["memory"] = metrics["memory"]
-    combined_metrics["integration"] = metrics["integration"]
     combined_metrics["seed_metrics"] = seed_metrics
     seed_metrics[str(int(metrics_seed))] = metrics
     combined_metrics["seeds"] = sorted(int(seed) for seed in seed_metrics.keys())

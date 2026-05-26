@@ -1,5 +1,4 @@
 from .ncde import NeuralCDE
-from .log_ncde import LogNCDE
 from .nrde import NeuralRDE
 from .bnrde import BNRDE
 from .m_ode import ManifoldNeuralODE
@@ -17,7 +16,6 @@ from .extrapolation import (
 
 Model = (
     NeuralCDE
-    | LogNCDE
     | NeuralRDE
     | BNRDE
     | ManifoldNeuralODE
@@ -30,7 +28,6 @@ Model = (
 __all__ = [
     "Model",
     "NeuralCDE",
-    "LogNCDE",
     "NeuralRDE",
     "BNRDE",
     "ManifoldNeuralODE",

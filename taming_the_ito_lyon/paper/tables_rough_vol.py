@@ -14,7 +14,6 @@ MODEL_NAME_LOOKUP: dict[str, str] = {
     "ncde": r"\gls{ncde}",
     "bnrde": r"\gls{bnrde}",
     "gru": r"\gls{gru}",
-    "log_ncde": r"\gls{logncde}",
 }
 
 DISPLAY_SCALE: float = 1e2

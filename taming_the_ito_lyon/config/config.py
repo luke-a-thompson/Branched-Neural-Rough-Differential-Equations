@@ -97,7 +97,6 @@ class ExperimentConfig(BaseModel):
             # `extrapolation_scheme` interface.
             if self.model_type not in (
                 ModelType.NCDE,
-                ModelType.LOG_NCDE,
                 ModelType.NRDE,
                 ModelType.BNRDE,
                 ModelType.GRU,
@@ -107,7 +106,7 @@ class ExperimentConfig(BaseModel):
             ):
                 raise ValueError(
                     "extrapolation_scheme is only supported for model_type in "
-                    "{ncde, log_ncde, nrde, bnrde, gru, lstm, xlstm, stacked_xlstm}."
+                    "{ncde, nrde, bnrde, gru, lstm, xlstm, stacked_xlstm}."
                 )
         return self
 
@@ -331,34 +330,6 @@ class BNRDEConfig(BaseModel):
     rough_solution: RoughSolution = Field(description="roughrax solution convention")
 
 
-class LogNCDEConfig(BaseModel):
-    """Top-level Log-NCDE configuration composed of model params."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    # Model params
-    cde_state_dim: PositiveInt = Field(description="CDE hidden state dimension")
-    vf_hidden_dim: PositiveInt = Field(description="Vector field MLP width")
-    init_hidden_dim: PositiveInt = Field(
-        description="Initial condition MLP hidden state dimension"
-    )
-    initial_cond_mlp_depth: PositiveInt = Field(
-        description="Initial condition MLP depth (number of hidden layers)"
-    )
-    vf_mlp_depth: PositiveInt = Field(
-        description="Vector field MLP depth (number of hidden layers)"
-    )
-    out_size: PositiveInt = Field(description="Output channels predicted by readout")
-
-    # Signature config
-    signature_depth: PositiveInt = Field(le=5, description="Signature depth")
-
-    # Log-signature window size in data steps (polyline uses window_size+1 points)
-    signature_window_size: PositiveInt = Field(
-        default=1, description="Data steps per log-signature window"
-    )
-
-
 class GRUConfig(BaseModel):
     """Top-level GRU configuration composed of model params."""
 
@@ -445,7 +416,6 @@ class Config(BaseModel):
     experiment_config: ExperimentConfig
     solver_config: SolverConfig
     ncde_config: NCDEConfig | None = None
-    log_ncde_config: LogNCDEConfig | None = None
     nrde_config: NRDEConfig | None = None
     bnrde_config: BNRDEConfig | None = None
     m_ode_config: MODEConfig | None = None
@@ -461,7 +431,6 @@ class Config(BaseModel):
 
         config_map = {
             ModelType.NCDE: self.ncde_config,
-            ModelType.LOG_NCDE: self.log_ncde_config,
             ModelType.NRDE: self.nrde_config,
             ModelType.BNRDE: self.bnrde_config,
             ModelType.M_ODE: self.m_ode_config,
@@ -480,7 +449,6 @@ class Config(BaseModel):
         # Ensure no extra configs are provided
         all_configs = [
             self.ncde_config,
-            self.log_ncde_config,
             self.nrde_config,
             self.bnrde_config,
             self.m_ode_config,
@@ -530,7 +498,6 @@ class Config(BaseModel):
         self,
     ) -> (
         NCDEConfig
-        | LogNCDEConfig
         | NRDEConfig
         | BNRDEConfig
         | MODEConfig
@@ -545,9 +512,6 @@ class Config(BaseModel):
         if model_type == ModelType.NCDE:
             assert self.ncde_config is not None
             return self.ncde_config
-        elif model_type == ModelType.LOG_NCDE:
-            assert self.log_ncde_config is not None
-            return self.log_ncde_config
         elif model_type == ModelType.NRDE:
             assert self.nrde_config is not None
             return self.nrde_config

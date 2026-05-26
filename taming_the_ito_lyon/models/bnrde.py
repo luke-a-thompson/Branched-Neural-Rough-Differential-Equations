@@ -16,7 +16,7 @@ from stochastax.manifolds.spd import SPDManifold
 from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolution
 
 from .extrapolation import ExtrapolationScheme
-from .logsignatures import compute_disjoint_signature_times
+from .rough_utils import compute_disjoint_signature_times
 
 
 def lipswish(x: jax.Array) -> jax.Array:
@@ -123,8 +123,7 @@ class BNRDE(eqx.Module):
         key: jax.Array,
         data_manifold: type[Manifold],
         hidden_state_mode: HiddenStateMode,
-        rough_solution: RoughSolution
-        | Literal["ito", "stratonovich"],
+        rough_solution: RoughSolution | Literal["ito", "stratonovich"],
         solver: diffrax.AbstractSolver,
         adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
@@ -254,9 +253,7 @@ class BNRDE(eqx.Module):
             sym = 0.5 * (sym + jnp.swapaxes(sym, -1, -2))
             evals, evecs = jnp.linalg.eigh(sym)
             evals = jnp.clip(evals, -8.0, 8.0)
-            return (evecs * jnp.exp(evals)[..., None, :]) @ jnp.swapaxes(
-                evecs, -1, -2
-            )
+            return (evecs * jnp.exp(evals)[..., None, :]) @ jnp.swapaxes(evecs, -1, -2)
         raise ValueError(f"Could not initialize BNRDE state for {self.data_manifold}.")
 
     def _apply_readout(self, hidden_states: jax.Array) -> jax.Array:
@@ -341,9 +338,3 @@ class BNRDE(eqx.Module):
         if self.evolving_out:
             return outputs
         return outputs[-1]
-
-    def integration_steps(self, control_values: jax.Array) -> jax.Array:
-        _, ts, control_values = self._prepare_control(control_values)
-        h0 = self._initial_hidden(control_values[0])
-        _, stats = self._solve_from_values(ts, control_values, h0)
-        return jnp.asarray(stats["num_steps"], dtype=jnp.float32)

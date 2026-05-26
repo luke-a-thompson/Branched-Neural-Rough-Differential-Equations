@@ -16,7 +16,6 @@ from taming_the_ito_lyon.config import (
     Datasets,
     BNRDEConfig,
     GRUConfig,
-    LogNCDEConfig,
     LSTMConfig,
     MODEConfig,
     NCDEConfig,
@@ -38,7 +37,6 @@ from taming_the_ito_lyon.models import (
     GRU,
     LSTM,
     XLSTM,
-    LogNCDE,
     ManifoldNeuralODE,
     Model,
     NeuralCDE,
@@ -70,7 +68,6 @@ def _maybe_create_extrapolation_scheme(
         config.nn_config,
         (
             NCDEConfig,
-            LogNCDEConfig,
             NRDEConfig,
             BNRDEConfig,
             GRUConfig,
@@ -218,24 +215,6 @@ def create_model(
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
                 control_interpolation=config.nn_config.control_interpolation,
-            )
-        case LogNCDEConfig():
-            return LogNCDE(
-                input_path_dim=input_path_dim,
-                cde_state_dim=config.nn_config.cde_state_dim,
-                init_hidden_dim=config.nn_config.init_hidden_dim,
-                vf_hidden_dim=config.nn_config.vf_hidden_dim,
-                initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
-                vf_mlp_depth=config.nn_config.vf_mlp_depth,
-                output_path_dim=output_path_dim,
-                signature_depth=config.nn_config.signature_depth,
-                signature_window_size=config.nn_config.signature_window_size,
-                solver=solver,
-                adjoint=adjoint,
-                stepsize_controller=stepsize_controller,
-                extrapolation_scheme=extrapolation_scheme,
-                n_recon=config.experiment_config.n_recon,
-                key=model_key,
             )
         case NRDEConfig():
             return NeuralRDE(
@@ -518,11 +497,14 @@ def _sample_brownian_controls_on_grid(
         raise ValueError(f"ts must have length >= 2, got {ts.shape[0]}")
 
     dt = ts[1:] - ts[:-1]
-    increments = jr.normal(
-        key,
-        (int(batch_size), timesteps, int(driver_dim)),
-        dtype=ts.dtype,
-    ) * jnp.sqrt(dt)[None, :, None]
+    increments = (
+        jr.normal(
+            key,
+            (int(batch_size), timesteps, int(driver_dim)),
+            dtype=ts.dtype,
+        )
+        * jnp.sqrt(dt)[None, :, None]
+    )
     values = jnp.concatenate(
         [
             jnp.zeros((int(batch_size), 1, int(driver_dim)), dtype=ts.dtype),
@@ -548,6 +530,7 @@ def create_unconditional_control_sampler(
     where the leading channel is `ts` and the remaining channels are the sampled
     driver values on the same grid.
     """
+
     def sample(ts: jax.Array, key: jax.Array) -> jax.Array:
         return _sample_brownian_controls_on_grid(
             ts,
@@ -572,6 +555,7 @@ def create_unconditional_control_sampler_batched(
     (batch_size, T, driver_dim + 1), where the leading channel is `ts` and the
     remaining channels are the sampled driver values on the same grid.
     """
+
     def sample_batch(ts: jax.Array, key: jax.Array, batch_size: int) -> jax.Array:
         return _sample_brownian_controls_on_grid(
             ts,
@@ -685,7 +669,8 @@ def create_grad_batch_loss_fns(
             assert base_branched_loss_fn is not None
             target_cov = (
                 gt_driver_b
-                if config.experiment_config.dataset_name == Datasets.SPD_WISHART_DIFFUSION
+                if config.experiment_config.dataset_name
+                == Datasets.SPD_WISHART_DIFFUSION
                 else None
             )
             return base_branched_loss_fn(preds, target_b, target_cov=target_cov)

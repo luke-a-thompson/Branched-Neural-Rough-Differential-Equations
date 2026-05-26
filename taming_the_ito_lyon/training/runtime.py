@@ -65,7 +65,6 @@ class ExperimentRuntime:
 def _effective_timesteps_for_model(config: Config, timesteps: int) -> int:
     """Trim disjoint-logsignature models to a whole number of windows."""
     if config.experiment_config.model_type not in (
-        ModelType.LOG_NCDE,
         ModelType.NRDE,
         ModelType.BNRDE,
     ):

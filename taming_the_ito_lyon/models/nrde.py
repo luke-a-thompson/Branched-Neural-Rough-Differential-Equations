@@ -15,7 +15,7 @@ from stochastax.manifolds import Manifold
 from stochastax.manifolds.spd import SPDManifold
 
 from .extrapolation import ExtrapolationScheme
-from .logsignatures import compute_disjoint_signature_times
+from .rough_utils import compute_disjoint_signature_times
 
 
 def _lyndon_logsig_size(input_path_dim: int, signature_depth: int) -> int:
@@ -275,12 +275,6 @@ class NeuralRDE(eqx.Module):
         if self.evolving_out:
             return outputs
         return outputs[-1]
-
-    def integration_steps(self, control_values: jax.Array) -> jax.Array:
-        _, ts, control_values = self._prepare_control(control_values)
-        h0 = self.initial(control_values[0])
-        _, stats = self._solve_from_values(ts, control_values, h0)
-        return jnp.asarray(stats["num_steps"], dtype=jnp.float32)
 
     def _prepare_control(
         self,

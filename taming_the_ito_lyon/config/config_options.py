@@ -27,7 +27,6 @@ class Datasets(Enum):
 
 class ModelType(StrEnum):
     NCDE = "ncde"
-    LOG_NCDE = "log_ncde"
     NRDE = "nrde"
     BNRDE = "bnrde"
     M_ODE = "m_ode"

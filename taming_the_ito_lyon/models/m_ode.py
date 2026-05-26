@@ -220,10 +220,3 @@ class ManifoldNeuralODE(eqx.Module):
         )
         x0 = self._extract_initial_condition(control_values)
         return self._solve_from_initial(x0, ts)
-
-    def integration_steps(self, control_values: jax.Array) -> jax.Array:
-        intervals = max(0, int(control_values.shape[0]) - 1)
-        return jnp.asarray(
-            intervals * int(self.steps_per_segment),
-            dtype=jnp.float32,
-        )
