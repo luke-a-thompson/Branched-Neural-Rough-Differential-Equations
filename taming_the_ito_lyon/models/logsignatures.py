@@ -46,7 +46,7 @@ def compute_windowed_logsignatures_from_values(
     values: jax.Array,
     hopf_algebra: HopfAlgebra,
     signature_depth: int,
-    signature_window_size: int,
+    signature_window_size  : int,
     *,
     brownian_channels: list[int] | None = None,
     brownian_corr: float | None = None,

@@ -224,7 +224,7 @@ def branched_signature_kernel_score(
             )
 
         B, T, _ = pred_x_btc.shape
-        if T < 2 or B < 1:
+        if T < 2 or B < 1:  
             return jnp.asarray(0.0, dtype=jnp.float32)
 
         target_cov = (

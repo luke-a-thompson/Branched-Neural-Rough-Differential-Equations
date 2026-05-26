@@ -9,6 +9,8 @@ import jax
 import jax.numpy as jnp
 from stochastax.manifolds.spd import SPDManifold
 
+SPD_EIGENVALUE_FAN_YTICKS = np.arange(0.25, 2.01, 0.25)
+
 
 def _as_btc_first_channel(x: np.ndarray) -> np.ndarray:
     """Coerce input to shape (B, T) by flattening trailing dims and taking channel 0."""
@@ -197,8 +199,6 @@ def save_spd_covariance_eigenvalue_trajectory_single_plot(
             )
     ax.set_xlabel("time index", fontsize=16)
     ax.set_ylabel("eigenvalue", fontsize=16)
-    ax.set_ylim(0.25, 2.0)
-    ax.set_yticks(np.arange(0.25, 2.01, 0.25))
     ax.legend(loc="best", frameon=False, fontsize=16)
     ax.tick_params(axis="both", labelsize=16)
     fig.tight_layout()
@@ -269,6 +269,11 @@ def save_spd_covariance_eigenvalue_fan_single_plot(
 
     ax.set_xlabel("time index", fontsize=16)
     ax.set_ylabel("eigenvalue", fontsize=16)
+    ax.set_ylim(0.25, 2.0, auto=False)
+    ax.yaxis.set_major_locator(mpl.ticker.FixedLocator(SPD_EIGENVALUE_FAN_YTICKS))
+    ax.yaxis.set_major_formatter(
+        mpl.ticker.FixedFormatter([f"{tick:g}" for tick in SPD_EIGENVALUE_FAN_YTICKS])
+    )
     ax.legend(loc="best", frameon=False, fontsize=16)
     ax.tick_params(axis="both", labelsize=16)
     fig.tight_layout()
