@@ -7,7 +7,7 @@ Simple GRU model with the same high-level interface as the CDE/RDE models:
   reconstruction + future, and we evaluate it at `ts` to obtain a discrete sequence.
 
 Additionally supports a Stochastax manifold, retracting the hidden state and the
-readout outputs (mirroring the behavior in `m_nrde.py`).
+readout outputs (mirroring the behavior in `bnrde.py`).
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ import jax.numpy as jnp
 import jax.random as jr
 
 from stochastax.manifolds import Manifold
+from stochastax.manifolds.spd import SPDManifold
 
 from .extrapolation import ExtrapolationScheme
 
@@ -103,6 +104,9 @@ class GRU(eqx.Module):
     def _apply_readout(self, hidden_states: jax.Array) -> jax.Array:
         def apply_single(h: jax.Array) -> jax.Array:
             y = self.readout_activation(self.readout_layer(h))
+            if isinstance(self.manifold, SPDManifold):
+                matrix = SPDManifold.unvech(y)
+                return SPDManifold.retract(matrix)
             return self.manifold.retract(y)
 
         return jax.vmap(apply_single)(hidden_states)
@@ -128,6 +132,8 @@ class GRU(eqx.Module):
         if self.evolving_out:
             return self._apply_readout(hidden)
 
-        return self.manifold.retract(
-            self.readout_activation(self.readout_layer(hidden[-1]))
-        )
+        final_output = self.readout_activation(self.readout_layer(hidden[-1]))
+        if isinstance(self.manifold, SPDManifold):
+            matrix = SPDManifold.unvech(final_output)
+            return SPDManifold.retract(matrix)
+        return self.manifold.retract(final_output)

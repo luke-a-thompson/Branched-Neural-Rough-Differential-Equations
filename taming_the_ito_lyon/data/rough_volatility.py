@@ -126,3 +126,12 @@ def _select_example_split(
             raise ValueError("val_fraction must be > 0 when split='val'.")
         return array[train_end:val_end]
     return array[val_end:]
+
+
+if __name__ == "__main__":
+    from taming_the_ito_lyon.config.config import load_toml_config
+
+    config = load_toml_config("configs/rough_volatility/~bnrde.toml")
+    dataset = RoughVolatilityDataset(config, "train")
+    print(dataset._driver.shape)
+    print(dataset._solution.shape)

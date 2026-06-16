@@ -44,14 +44,15 @@ class SearchSpace(BaseModel):
     max_grad_norm: ParamSpec | None = None
     batch_size: ParamSpec | None = None
     epochs: ParamSpec | None = None
-    mnrde_cde_state_dim: ParamSpec | None = None
-    mnrde_init_hidden_dim: ParamSpec | None = None
-    mnrde_vf_hidden_dim: ParamSpec | None = None
-    mnrde_initial_cond_mlp_depth: ParamSpec | None = None
-    mnrde_vf_mlp_depth: ParamSpec | None = None
-    mnrde_signature_depth: ParamSpec | None = None
-    mnrde_signature_window_size: ParamSpec | None = None
-    mnrde_hopf_algebra: ParamSpec | None = None
+    bnrde_hidden_size: ParamSpec | None = None
+    bnrde_initial_state_param_dim: ParamSpec | None = None
+    bnrde_init_hidden_dim: ParamSpec | None = None
+    bnrde_vf_hidden_dim: ParamSpec | None = None
+    bnrde_initial_cond_mlp_depth: ParamSpec | None = None
+    bnrde_vf_mlp_depth: ParamSpec | None = None
+    bnrde_signature_depth: ParamSpec | None = None
+    bnrde_signature_window_size: ParamSpec | None = None
+    bnrde_rough_solution: ParamSpec | None = None
 
     extrapolation_scheme: ParamSpec | None = None
 
@@ -61,13 +62,14 @@ SEARCH_SPACE = SearchSpace(
     weight_decay=None,
     batch_size=None,
     epochs=None,
-    mnrde_cde_state_dim=None,
-    mnrde_init_hidden_dim=None,
-    mnrde_vf_hidden_dim=None,
-    mnrde_initial_cond_mlp_depth=None,
-    mnrde_vf_mlp_depth=None,
-    mnrde_signature_depth=None,
-    mnrde_signature_window_size=None,
+    bnrde_hidden_size=None,
+    bnrde_initial_state_param_dim=None,
+    bnrde_init_hidden_dim=None,
+    bnrde_vf_hidden_dim=None,
+    bnrde_initial_cond_mlp_depth=None,
+    bnrde_vf_mlp_depth=None,
+    bnrde_signature_depth=None,
+    bnrde_signature_window_size=None,
     # extrapolation_scheme=ParamSpec(choices=["linear", "hermite", "piecewiseMLP"]),
     extrapolation_scheme=None,
 )
@@ -80,14 +82,15 @@ PARAM_PATHS: dict[str, list[str]] = {
     "batch_size": ["experiment_config", "batch_size"],
     "epochs": ["experiment_config", "epochs"],
     "extrapolation_scheme": ["experiment_config", "extrapolation_scheme"],
-    "mnrde_cde_state_dim": ["mnrde_config", "cde_state_dim"],
-    "mnrde_init_hidden_dim": ["mnrde_config", "init_hidden_dim"],
-    "mnrde_vf_hidden_dim": ["mnrde_config", "vf_hidden_dim"],
-    "mnrde_initial_cond_mlp_depth": ["mnrde_config", "initial_cond_mlp_depth"],
-    "mnrde_vf_mlp_depth": ["mnrde_config", "vf_mlp_depth"],
-    "mnrde_signature_depth": ["mnrde_config", "signature_depth"],
-    "mnrde_signature_window_size": ["mnrde_config", "signature_window_size"],
-    "mnrde_hopf_algebra": ["mnrde_config", "hopf_algebra"],
+    "bnrde_hidden_size": ["bnrde_config", "hidden_size"],
+    "bnrde_initial_state_param_dim": ["bnrde_config", "initial_state_param_dim"],
+    "bnrde_init_hidden_dim": ["bnrde_config", "init_hidden_dim"],
+    "bnrde_vf_hidden_dim": ["bnrde_config", "vf_hidden_dim"],
+    "bnrde_initial_cond_mlp_depth": ["bnrde_config", "initial_cond_mlp_depth"],
+    "bnrde_vf_mlp_depth": ["bnrde_config", "vf_mlp_depth"],
+    "bnrde_signature_depth": ["bnrde_config", "signature_depth"],
+    "bnrde_signature_window_size": ["bnrde_config", "signature_window_size"],
+    "bnrde_rough_solution": ["bnrde_config", "rough_solution"],
 }
 
 

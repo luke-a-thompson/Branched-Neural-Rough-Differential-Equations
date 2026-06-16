@@ -1,26 +1,32 @@
 from __future__ import annotations
+
 import tomllib
+
 from pydantic import (
-    BaseModel,
     AliasChoices,
+    BaseModel,
     ConfigDict,
     Field,
-    PositiveInt,
     PositiveFloat,
-    model_validator,
+    PositiveInt,
     field_validator,
+    model_validator,
 )
+
 from taming_the_ito_lyon.config.config_options import (
-    Optimizer,
-    ModelType,
+    AdjointType,
+    ControlInterpolationType,
     Datasets,
     ExtrapolationSchemeType,
+    HiddenStateMode,
     LossType,
-    HopfAlgebraType,
-    TrainingMode,
-    UnconditionalDriverKind,
     ManifoldType,
+    ModelType,
+    Optimizer,
+    RoughSolution,
+    SolverType,
     StepsizeControllerType,
+    TrainingMode,
 )
 
 
@@ -58,6 +64,13 @@ class ExperimentConfig(BaseModel):
     test_fraction: PositiveFloat = Field(
         default=0.1, le=1.0, description="Fraction of data for testing"
     )
+    synthetic_gbm_dim: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Optional channel dimension override for the in-memory synthetic GBM "
+            "benchmark dataset."
+        ),
+    )
 
     @model_validator(mode="after")
     def validate_fractions_sum(self) -> ExperimentConfig:
@@ -84,15 +97,25 @@ class ExperimentConfig(BaseModel):
             # `extrapolation_scheme` interface.
             if self.model_type not in (
                 ModelType.NCDE,
-                ModelType.LOG_NCDE,
-                ModelType.MNRDE,
+                ModelType.NRDE,
+                ModelType.BNRDE,
                 ModelType.GRU,
+                ModelType.LSTM,
+                ModelType.XLSTM,
+                ModelType.STACKED_XLSTM,
             ):
                 raise ValueError(
                     "extrapolation_scheme is only supported for model_type in "
-                    "{ncde, log_ncde, mnrde, gru}."
+                    "{ncde, nrde, bnrde, gru, lstm, xlstm, stacked_xlstm}."
                 )
         return self
+
+    @property
+    def uses_flat_so3_driver(self) -> bool:
+        return (
+            self.model_type == ModelType.M_ODE
+            or self.extrapolation_scheme == ExtrapolationSchemeType.SO3_SG
+        )
 
     # Optimizer
     optimizer: Optimizer = Field(description="Optimizer name")
@@ -108,12 +131,19 @@ class ExperimentConfig(BaseModel):
     # Training
     loss: LossType = Field(description="Loss function to use")
     seed: PositiveInt = Field(description="PRNG seed")
-    batch_size: PositiveInt = Field(
-        multiple_of=8, description="Batch size; divisible by 8"
-    )
+    batch_size: PositiveInt = Field(description="Batch size")
     epochs: PositiveInt = Field(description="Number of epochs")
     early_stopping_patience: PositiveInt = Field(
         default=25, description="Epochs with no val improvement before stopping"
+    )
+
+    ito_level2_mmd_weight: float = Field(
+        default=1.0,
+        ge=0.0,
+        description=(
+            "Weight for the Itô / branched level-2 distribution-matching MMD loss "
+            "(only applied to matching branched-signature experiments)."
+        ),
     )
 
     @model_validator(mode="after")
@@ -126,8 +156,9 @@ class ExperimentConfig(BaseModel):
         return self
 
     manifold: ManifoldType = Field(description="Manifold to use")
-    hidden_manifold: ManifoldType = Field(
-        default=ManifoldType.EUCLIDEAN, description="Hidden manifold to use"
+    hidden_state_mode: HiddenStateMode = Field(
+        description="Hidden state space to use",
+        validation_alias=AliasChoices("hidden_state_mode", "hidden_manifold"),
     )
 
     evolving_out: bool = Field(description="Whether to evolve the output")
@@ -136,19 +167,6 @@ class ExperimentConfig(BaseModel):
     training_mode: TrainingMode = Field(
         default=TrainingMode.CONDITIONAL,
         description="Training mode: 'conditional' uses dataset controls; 'unconditional' samples a driver internally.",
-    )
-    unconditional_driver_kind: UnconditionalDriverKind | None = Field(
-        default=None,
-        description="Unconditional driver kind: bm / fbm / rl (Riemann-Liouville / rough).",
-    )
-    unconditional_driver_dim: PositiveInt | None = Field(
-        default=None,
-        description="Number of non-time driver channels for unconditional mode. The model input dim becomes (unconditional_driver_dim + 1) to include time.",
-    )
-    unconditional_hurst: PositiveFloat | None = Field(
-        default=None,
-        le=1.0,
-        description="Hurst parameter used when unconditional_driver_kind is 'rl'.",
     )
 
     # Performance / logging
@@ -169,60 +187,22 @@ class ExperimentConfig(BaseModel):
                     Datasets.BLACK_SCHOLES,
                     Datasets.BERGOMI,
                     Datasets.ROUGH_BERGOMI,
+                    Datasets.SIMPLE_RBERGOMI,
                 ):
                     raise ValueError(
                         "Rough volatility datasets do not support conditional training"
                     )
-                if (
-                    self.unconditional_driver_kind is not None
-                    or self.unconditional_driver_dim is not None
-                    or self.unconditional_hurst is not None
-                ):
-                    raise ValueError(
-                        "unconditional_driver_kind, unconditional_driver_dim, and unconditional_hurst must be None when training_mode='conditional'"
-                    )
             case TrainingMode.UNCONDITIONAL:
-                if (
-                    self.unconditional_driver_kind is None
-                    or self.unconditional_driver_dim is None
-                    or self.unconditional_hurst is None
-                ):
-                    raise ValueError(
-                        "unconditional_driver_kind, unconditional_driver_dim, and unconditional_hurst must be set when training_mode='unconditional'"
-                    )
                 if self.extrapolation_scheme is not None:
                     raise ValueError(
                         "extrapolation_scheme must be None when training_mode='unconditional'"
                     )
+                if self.model_type == ModelType.M_ODE:
+                    raise ValueError(
+                        "model_type='m_ode' only supports conditional training"
+                    )
             case _:
                 raise ValueError(f"Unknown training mode: {self.training_mode}")
-        return self
-
-    @model_validator(mode="after")
-    def validate_unconditional_driver_kind(self) -> ExperimentConfig:
-        # Only validate driver hyperparameters when unconditional mode is active.
-        if self.training_mode != TrainingMode.UNCONDITIONAL:
-            return self
-        if self.unconditional_driver_kind is None or self.unconditional_hurst is None:
-            return self
-
-        if (
-            self.unconditional_driver_kind == UnconditionalDriverKind.BM
-            and self.unconditional_hurst != 0.5
-        ):
-            raise ValueError(
-                f"Hurst parameter (currently {self.unconditional_hurst}) must be 0.5 for Brownian motion driver"
-            )
-        if self.unconditional_driver_kind in (
-            UnconditionalDriverKind.FBM,
-            UnconditionalDriverKind.RL,
-        ):
-            hurst = float(self.unconditional_hurst)
-            if not (0.0 < hurst < 1.0):
-                raise ValueError(
-                    f"Hurst parameter must be in (0, 1) for driver_kind='{self.unconditional_driver_kind}' "
-                    f"(got {hurst})"
-                )
         return self
 
 
@@ -232,12 +212,24 @@ class SolverConfig(BaseModel):
     stepsize_controller: StepsizeControllerType = Field(
         description="Stepsize controller to use"
     )
+    solver: SolverType = Field(description="ODE solver to use")
+    adjoint: AdjointType = Field(
+        default=AdjointType.RECURSIVE_CHECKPOINT,
+        description="Adjoint method for backpropagation through the ODE solve",
+    )
 
     # Solver tolerances
     rtol: PositiveFloat = Field(description="Relative tolerance for solver")
     atol: PositiveFloat = Field(description="Absolute tolerance for solver")
     dtmin: PositiveFloat = Field(description="Minimum time step for solver")
     dt0: PositiveFloat = Field(default=0.01, description="Initial step size for solver")
+
+    @field_validator("solver", mode="before")
+    @classmethod
+    def coerce_solver_name(cls, v: object) -> object:
+        if isinstance(v, str) and v.strip() == "CG2":
+            return SolverType.CG2
+        return v
 
     @model_validator(mode="after")
     def validate_solver_tolerances(self) -> SolverConfig:
@@ -270,6 +262,10 @@ class NCDEConfig(BaseModel):
     )
     cde_state_dim: PositiveInt = Field(description="CDE hidden state dimension")
     out_size: PositiveInt = Field(description="Output channels predicted by readout")
+    control_interpolation: ControlInterpolationType = Field(
+        default=ControlInterpolationType.HERMITE_CUBIC,
+        description="Interpolation scheme used for the control path",
+    )
 
 
 class NRDEConfig(BaseModel):
@@ -300,8 +296,8 @@ class NRDEConfig(BaseModel):
     )
 
 
-class MNRDEConfig(BaseModel):
-    """Top-level M-NRDE configuration composed of model params."""
+class BNRDEConfig(BaseModel):
+    """Top-level BNRDE configuration composed of model params."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -316,55 +312,22 @@ class MNRDEConfig(BaseModel):
     vf_mlp_depth: PositiveInt = Field(
         description="Vector field MLP depth (number of hidden layers)"
     )
-    cde_state_dim: PositiveInt = Field(description="CDE hidden state dimension")
-    out_size: PositiveInt = Field(description="Output channels predicted by readout")
-
-    # Signature config
-    signature_depth: PositiveInt = Field(le=5, description="Signature depth")
-    signature_window_size: PositiveInt = Field(
-        default=1, description="Data steps per log-signature window"
-    )
-
-    # Optional multi-window variant: compute log-signatures on multiple window sizes
-    # and drive a sum of CDE terms, one per window size.
-    signature_window_sizes: list[int] | None = Field(
+    hidden_size: PositiveInt | None = Field(
         default=None,
-        description=(
-            "Optional list of disjoint log-signature window sizes. If provided, "
-            "overrides signature_window_size and uses a multi-window MNRDE drive."
-        ),
+        description="Euclidean hidden state dimension for BNRDE",
     )
-
-    # Hopf algebra for M-NRDE
-    hopf_algebra: HopfAlgebraType = Field(description="Hopf algebra to use")
-
-
-class LogNCDEConfig(BaseModel):
-    """Top-level Log-NCDE configuration composed of model params."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    # Model params
-    cde_state_dim: PositiveInt = Field(description="CDE hidden state dimension")
-    vf_hidden_dim: PositiveInt = Field(description="Vector field MLP width")
-    init_hidden_dim: PositiveInt = Field(
-        description="Initial condition MLP hidden state dimension"
-    )
-    initial_cond_mlp_depth: PositiveInt = Field(
-        description="Initial condition MLP depth (number of hidden layers)"
-    )
-    vf_mlp_depth: PositiveInt = Field(
-        description="Vector field MLP depth (number of hidden layers)"
+    initial_state_param_dim: PositiveInt | None = Field(
+        default=None,
+        description="Initial-state parameter dimension for problem-manifold BNRDE",
     )
     out_size: PositiveInt = Field(description="Output channels predicted by readout")
 
     # Signature config
     signature_depth: PositiveInt = Field(le=5, description="Signature depth")
-
-    # Log-signature window size in data steps (polyline uses window_size+1 points)
     signature_window_size: PositiveInt = Field(
         default=1, description="Data steps per log-signature window"
     )
+    rough_solution: RoughSolution = Field(description="roughrax solution convention")
 
 
 class GRUConfig(BaseModel):
@@ -384,16 +347,82 @@ class GRUConfig(BaseModel):
     out_size: PositiveInt = Field(description="Output channels predicted by readout")
 
 
+class LSTMConfig(BaseModel):
+    """Top-level stacked LSTM configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    lstm_state_dim: PositiveInt = Field(description="LSTM hidden state dimension")
+    num_layers: PositiveInt = Field(
+        default=2, description="Number of stacked recurrent layers"
+    )
+    init_hidden_dim: PositiveInt = Field(
+        description="Initial condition MLP width (controls hidden layer width)",
+        validation_alias=AliasChoices("init_hidden_dim", "mlp_hidden_dim"),
+    )
+    initial_cond_mlp_depth: PositiveInt = Field(
+        description="Initial condition MLP depth (number of hidden layers)"
+    )
+    out_size: PositiveInt = Field(description="Output channels predicted by readout")
+
+
+class XLSTMConfig(BaseModel):
+    """Top-level single-layer xLSTM configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    d_model: PositiveInt = Field(description="Model width")
+    num_heads: PositiveInt = Field(description="Number of mLSTM heads")
+    d_conv: PositiveInt = Field(default=4, description="Depthwise convolution width")
+    xlstm_expand: PositiveInt = Field(default=2, description="Inner expansion factor")
+    ffn_expand: PositiveInt = Field(default=2, description="FFN expansion factor")
+    use_ffn: bool = Field(default=True, description="Whether to include the FFN block")
+    out_size: PositiveInt = Field(description="Output channels predicted by readout")
+
+
+class StackedXLSTMConfig(BaseModel):
+    """Top-level stacked xLSTM configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    d_model: PositiveInt = Field(description="Model width")
+    num_heads: PositiveInt = Field(description="Number of mLSTM heads")
+    num_layers: PositiveInt = Field(description="Number of stacked xLSTM layers")
+    d_conv: PositiveInt = Field(default=4, description="Depthwise convolution width")
+    xlstm_expand: PositiveInt = Field(default=2, description="Inner expansion factor")
+    ffn_expand: PositiveInt = Field(default=2, description="FFN expansion factor")
+    use_ffn: bool = Field(default=True, description="Whether to include the FFN block")
+    out_size: PositiveInt = Field(description="Output channels predicted by readout")
+
+
+class MODEConfig(BaseModel):
+    """Top-level manifold Neural ODE configuration."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    vf_hidden_dim: PositiveInt = Field(description="Vector field MLP width")
+    vf_mlp_depth: PositiveInt = Field(
+        description="Vector field MLP depth (number of hidden layers)"
+    )
+    output_scale: PositiveFloat = Field(
+        default=1.0,
+        description="Bound on local coordinate velocity after tanh",
+    )
+
+
 class Config(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     experiment_config: ExperimentConfig
     solver_config: SolverConfig
     ncde_config: NCDEConfig | None = None
-    log_ncde_config: LogNCDEConfig | None = None
     nrde_config: NRDEConfig | None = None
-    mnrde_config: MNRDEConfig | None = None
+    bnrde_config: BNRDEConfig | None = None
+    m_ode_config: MODEConfig | None = None
     gru_config: GRUConfig | None = None
+    lstm_config: LSTMConfig | None = None
+    xlstm_config: XLSTMConfig | None = None
+    stacked_xlstm_config: StackedXLSTMConfig | None = None
 
     @model_validator(mode="after")
     def validate_model_config_exists(self) -> "Config":
@@ -402,10 +431,13 @@ class Config(BaseModel):
 
         config_map = {
             ModelType.NCDE: self.ncde_config,
-            ModelType.LOG_NCDE: self.log_ncde_config,
             ModelType.NRDE: self.nrde_config,
-            ModelType.MNRDE: self.mnrde_config,
+            ModelType.BNRDE: self.bnrde_config,
+            ModelType.M_ODE: self.m_ode_config,
             ModelType.GRU: self.gru_config,
+            ModelType.LSTM: self.lstm_config,
+            ModelType.XLSTM: self.xlstm_config,
+            ModelType.STACKED_XLSTM: self.stacked_xlstm_config,
         }
 
         active_config = config_map.get(model_type)
@@ -417,39 +449,90 @@ class Config(BaseModel):
         # Ensure no extra configs are provided
         all_configs = [
             self.ncde_config,
-            self.log_ncde_config,
             self.nrde_config,
-            self.mnrde_config,
+            self.bnrde_config,
+            self.m_ode_config,
             self.gru_config,
+            self.lstm_config,
+            self.xlstm_config,
+            self.stacked_xlstm_config,
         ]
         num_provided = sum(c is not None for c in all_configs)
         if num_provided > 1:
             raise ValueError("Only one model config section should be provided")
+
+        if self.experiment_config.hidden_state_mode == HiddenStateMode.PROBLEM_MANIFOLD:
+            if model_type != ModelType.BNRDE:
+                raise ValueError(
+                    "hidden_state_mode='problem_manifold' is currently supported "
+                    "only for model_type='bnrde'."
+                )
+            assert self.bnrde_config is not None
+            if self.bnrde_config.initial_state_param_dim is None:
+                raise ValueError(
+                    "hidden_state_mode='problem_manifold' requires "
+                    "bnrde_config.initial_state_param_dim."
+                )
+            if self.bnrde_config.hidden_size is not None:
+                raise ValueError(
+                    "Use bnrde_config.initial_state_param_dim instead of "
+                    "hidden_size when hidden_state_mode='problem_manifold'."
+                )
+            if self.solver_config.solver not in (SolverType.CFEES25,):
+                raise ValueError(
+                    "hidden_state_mode='problem_manifold' requires solver to be "
+                    "'cfees25'."
+                )
+        elif model_type == ModelType.BNRDE:
+            assert self.bnrde_config is not None
+            if self.bnrde_config.hidden_size is None:
+                raise ValueError(
+                    "bnrde_config.hidden_size is required when "
+                    "hidden_state_mode='euclidean'."
+                )
 
         return self
 
     @property
     def nn_config(
         self,
-    ) -> NCDEConfig | LogNCDEConfig | NRDEConfig | MNRDEConfig | GRUConfig:
+    ) -> (
+        NCDEConfig
+        | NRDEConfig
+        | BNRDEConfig
+        | MODEConfig
+        | GRUConfig
+        | LSTMConfig
+        | XLSTMConfig
+        | StackedXLSTMConfig
+    ):
         """Get the active model configuration based on model_type."""
         model_type = self.experiment_config.model_type
 
         if model_type == ModelType.NCDE:
             assert self.ncde_config is not None
             return self.ncde_config
-        elif model_type == ModelType.LOG_NCDE:
-            assert self.log_ncde_config is not None
-            return self.log_ncde_config
         elif model_type == ModelType.NRDE:
             assert self.nrde_config is not None
             return self.nrde_config
-        elif model_type == ModelType.MNRDE:
-            assert self.mnrde_config is not None
-            return self.mnrde_config
+        elif model_type == ModelType.BNRDE:
+            assert self.bnrde_config is not None
+            return self.bnrde_config
+        elif model_type == ModelType.M_ODE:
+            assert self.m_ode_config is not None
+            return self.m_ode_config
         elif model_type == ModelType.GRU:
             assert self.gru_config is not None
             return self.gru_config
+        elif model_type == ModelType.LSTM:
+            assert self.lstm_config is not None
+            return self.lstm_config
+        elif model_type == ModelType.XLSTM:
+            assert self.xlstm_config is not None
+            return self.xlstm_config
+        elif model_type == ModelType.STACKED_XLSTM:
+            assert self.stacked_xlstm_config is not None
+            return self.stacked_xlstm_config
         else:
             raise ValueError(f"Unknown model type: {model_type}")
 

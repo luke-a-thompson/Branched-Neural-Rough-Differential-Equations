@@ -1,39 +1,53 @@
+import math
+from collections.abc import Callable
+
+import diffrax
+import equinox as eqx
 import jax
+import jax.numpy as jnp
 import optax
+from cyreal.loader import DataLoader
+from cyreal.transforms import BatchTransform
+from diffrax import ConstantStepSize, PIDController
+from stochastax.manifolds import SO3, EuclideanSpace, Manifold
+from stochastax.manifolds.spd import SPDManifold
+
 from taming_the_ito_lyon.config import (
-    Optimizer,
+    BNRDEConfig,
     Config,
-    NCDEConfig,
-    LogNCDEConfig,
-    NRDEConfig,
-    MNRDEConfig,
+    Datasets,
     GRUConfig,
+    LSTMConfig,
+    MODEConfig,
+    NCDEConfig,
+    NRDEConfig,
+    Optimizer,
+    StackedXLSTMConfig,
+    XLSTMConfig,
 )
 from taming_the_ito_lyon.config.config_options import (
+    AdjointType,
+    HiddenStateMode,
     LossType,
-    UnconditionalDriverKind,
-    StepsizeControllerType,
     ManifoldType,
+    SolverType,
+    StepsizeControllerType,
 )
-from stochastax.manifolds import Manifold, EuclideanSpace, SO3
-from diffrax import ConstantStepSize, PIDController
 from taming_the_ito_lyon.models import (
-    NeuralCDE,
-    LogNCDE,
-    NeuralRDE,
-    MNDRE,
+    BNRDE,
     GRU,
-    create_scheme,
+    LSTM,
+    XLSTM,
+    ManifoldNeuralODE,
     Model,
+    NeuralCDE,
+    NeuralRDE,
+    StackedXLSTM,
+    create_scheme,
 )
 from taming_the_ito_lyon.models.extrapolation import (
     ExtrapolationScheme as ExtrapolationSchemeProtocol,
 )
-from taming_the_ito_lyon.config import Datasets
-import equinox as eqx
-from collections.abc import Callable
-from cyreal.transforms import BatchTransform, DevicePutTransform
-from cyreal.loader import DataLoader
 from taming_the_ito_lyon.training.results_gathering_fns import (
     ResultsGatheringFn,
 )
@@ -52,7 +66,16 @@ def _maybe_create_extrapolation_scheme(
 
     # Only these models currently accept extrapolation parameters.
     if not isinstance(
-        config.nn_config, (NCDEConfig, LogNCDEConfig, MNRDEConfig, GRUConfig)
+        config.nn_config,
+        (
+            NCDEConfig,
+            NRDEConfig,
+            BNRDEConfig,
+            GRUConfig,
+            LSTMConfig,
+            XLSTMConfig,
+            StackedXLSTMConfig,
+        ),
     ):
         return key, None
 
@@ -85,9 +108,37 @@ def create_manifold_from_type(
         case ManifoldType.SO3:
             return SO3
         case ManifoldType.SPD:
-            raise NotImplementedError("SPD manifold not implemented yet")
+            return SPDManifold
         case _:
             raise ValueError(f"Unknown manifold: {manifold_type}")
+
+
+def create_solver(config: Config) -> diffrax.AbstractSolver:
+    match config.solver_config.solver:
+        case SolverType.TSIT5:
+            return diffrax.Tsit5()
+        case SolverType.HEUN:
+            return diffrax.Heun()
+        case SolverType.EES252N:
+            from diffrax_lowstorage import EES25
+
+            return EES25()
+        case SolverType.CFEES25:
+            from georax import CFEES25
+
+            return CFEES25()
+        case _:
+            raise ValueError(f"Unknown solver: {config.solver_config.solver}")
+
+
+def create_adjoint(config: Config) -> diffrax.AbstractAdjoint:
+    match config.solver_config.adjoint:
+        case AdjointType.RECURSIVE_CHECKPOINT:
+            return diffrax.RecursiveCheckpointAdjoint()
+        case AdjointType.REVERSIBLE:
+            return diffrax.ReversibleAdjoint()
+        case _:
+            raise ValueError(f"Unknown adjoint: {config.solver_config.adjoint}")
 
 
 def create_stepsize_controller(
@@ -108,6 +159,23 @@ def create_stepsize_controller(
             )
 
 
+def _infer_local_dim_for_m_ode(
+    manifold: type[Manifold],
+    input_path_dim: int,
+) -> int:
+    if manifold is SO3:
+        return 3
+    if manifold is SPDManifold:
+        disc = 1 + 4 * int(input_path_dim)
+        n = math.isqrt(disc)
+        if n * n != disc:
+            raise ValueError(
+                f"Cannot infer SPD local dimension from input_path_dim={input_path_dim}."
+            )
+        return (n - 1) // 2
+    return int(input_path_dim)
+
+
 def create_model(
     config: Config,
     *,
@@ -120,10 +188,14 @@ def create_model(
     )
 
     manifold = create_manifold_from_type(config.experiment_config.manifold)
-    hidden_manifold = create_manifold_from_type(
-        config.experiment_config.hidden_manifold
+    hidden_manifold = (
+        EuclideanSpace
+        if config.experiment_config.hidden_state_mode == HiddenStateMode.EUCLIDEAN
+        else manifold
     )
     stepsize_controller = create_stepsize_controller(config)
+    solver = create_solver(config)
+    adjoint = create_adjoint(config)
     match config.nn_config:
         case NCDEConfig():
             return NeuralCDE(
@@ -136,26 +208,14 @@ def create_model(
                 output_path_dim=output_path_dim,
                 key=model_key,
                 manifold=manifold,
+                solver=solver,
+                adjoint=adjoint,
                 stepsize_controller=stepsize_controller,
+                dt0=config.solver_config.dt0,
                 evolving_out=config.experiment_config.evolving_out,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
-            )
-        case LogNCDEConfig():
-            return LogNCDE(
-                input_path_dim=input_path_dim,
-                cde_state_dim=config.nn_config.cde_state_dim,
-                init_hidden_dim=config.nn_config.init_hidden_dim,
-                vf_hidden_dim=config.nn_config.vf_hidden_dim,
-                initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
-                vf_mlp_depth=config.nn_config.vf_mlp_depth,
-                output_path_dim=output_path_dim,
-                signature_depth=config.nn_config.signature_depth,
-                signature_window_size=config.nn_config.signature_window_size,
-                stepsize_controller=stepsize_controller,
-                extrapolation_scheme=extrapolation_scheme,
-                n_recon=config.experiment_config.n_recon,
-                key=model_key,
+                control_interpolation=config.nn_config.control_interpolation,
             )
         case NRDEConfig():
             return NeuralRDE(
@@ -168,13 +228,25 @@ def create_model(
                 output_path_dim=output_path_dim,
                 signature_depth=config.nn_config.signature_depth,
                 signature_window_size=config.nn_config.signature_window_size,
+                manifold=manifold,
+                solver=solver,
+                adjoint=adjoint,
                 stepsize_controller=stepsize_controller,
-                key=key,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+                key=model_key,
             )
-        case MNRDEConfig():
-            return MNDRE(
+        case BNRDEConfig():
+            initial_state_param_dim = (
+                config.nn_config.initial_state_param_dim
+                if config.experiment_config.hidden_state_mode
+                == HiddenStateMode.PROBLEM_MANIFOLD
+                else config.nn_config.hidden_size
+            )
+            assert initial_state_param_dim is not None
+            return BNRDE(
                 input_path_dim=input_path_dim,
-                cde_state_dim=config.nn_config.cde_state_dim,
+                initial_state_param_dim=initial_state_param_dim,
                 initial_hidden_dim=config.nn_config.init_hidden_dim,
                 vf_hidden_dim=config.nn_config.vf_hidden_dim,
                 initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
@@ -182,13 +254,27 @@ def create_model(
                 output_path_dim=output_path_dim,
                 signature_depth=config.nn_config.signature_depth,
                 signature_window_size=config.nn_config.signature_window_size,
-                signature_window_sizes=config.nn_config.signature_window_sizes,
                 data_manifold=manifold,
-                hidden_manifold=hidden_manifold,
-                hopf_algebra_type=config.nn_config.hopf_algebra,
+                hidden_state_mode=config.experiment_config.hidden_state_mode,
+                rough_solution=config.nn_config.rough_solution,
+                solver=solver,
                 stepsize_controller=stepsize_controller,
+                adjoint=adjoint,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
+                key=model_key,
+            )
+        case MODEConfig():
+            return ManifoldNeuralODE(
+                local_dim=_infer_local_dim_for_m_ode(manifold, input_path_dim),
+                anchor_dim=input_path_dim,
+                vf_hidden_dim=config.nn_config.vf_hidden_dim,
+                vf_mlp_depth=config.nn_config.vf_mlp_depth,
+                manifold=manifold,
+                output_scale=config.nn_config.output_scale,
+                solver=solver,
+                adjoint=adjoint,
+                stepsize_controller=stepsize_controller,
                 key=model_key,
             )
         case GRUConfig():
@@ -207,24 +293,54 @@ def create_model(
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
             )
-        # case SDEONetConfig():
-        #     return SDEONet(
-        #         basis_in_dim=config.nn_config.basis_in_dim,
-        #         basis_out_dim=config.nn_config.basis_out_dim,
-        #         T=config.nn_config.T,
-        #         hermite_M=config.nn_config.hermite_M,
-        #         wick_order=config.nn_config.wick_order,
-        #         use_posenc=config.nn_config.use_posenc,
-        #         pe_dim=config.nn_config.pe_dim,
-        #         include_raw_time=config.nn_config.include_raw_time,
-        #         branch_width=config.nn_config.branch_width,
-        #         branch_depth=config.nn_config.branch_depth,
-        #         trunk_width=config.nn_config.trunk_width,
-        #         trunk_depth=config.nn_config.trunk_depth,
-        #         use_layernorm=config.nn_config.use_layernorm,
-        #         residual=config.nn_config.residual,
-        #         key=key,
-        #     )
+        case LSTMConfig():
+            return LSTM(
+                input_path_dim=input_path_dim,
+                lstm_state_dim=config.nn_config.lstm_state_dim,
+                output_path_dim=output_path_dim,
+                mlp_hidden_dim=config.nn_config.init_hidden_dim,
+                initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
+                key=model_key,
+                manifold=manifold(),
+                hidden_manifold=hidden_manifold(),
+                num_layers=config.nn_config.num_layers,
+                evolving_out=config.experiment_config.evolving_out,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+            )
+        case XLSTMConfig():
+            return XLSTM(
+                input_path_dim=input_path_dim,
+                output_path_dim=output_path_dim,
+                d_model=config.nn_config.d_model,
+                n_heads=config.nn_config.num_heads,
+                d_conv=config.nn_config.d_conv,
+                xlstm_expand=config.nn_config.xlstm_expand,
+                ffn_expand=config.nn_config.ffn_expand,
+                use_ffn=config.nn_config.use_ffn,
+                key=model_key,
+                manifold=manifold(),
+                evolving_out=config.experiment_config.evolving_out,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+            )
+        case StackedXLSTMConfig():
+            return StackedXLSTM(
+                input_path_dim=input_path_dim,
+                output_path_dim=output_path_dim,
+                d_model=config.nn_config.d_model,
+                n_heads=config.nn_config.num_heads,
+                num_layers=config.nn_config.num_layers,
+                d_conv=config.nn_config.d_conv,
+                xlstm_expand=config.nn_config.xlstm_expand,
+                ffn_expand=config.nn_config.ffn_expand,
+                use_ffn=config.nn_config.use_ffn,
+                key=model_key,
+                manifold=manifold(),
+                evolving_out=config.experiment_config.evolving_out,
+                extrapolation_scheme=extrapolation_scheme,
+                n_recon=config.experiment_config.n_recon,
+            )
         case _:
             raise ValueError(f"Unknown model: {config.model_config}")
 
@@ -255,65 +371,145 @@ def create_optimizer(
     return base_optim
 
 
+def _splits(cls: type, config: Config, *, disk: bool) -> tuple:
+    method = "make_disk_source" if disk else "make_array_source"
+    return tuple(
+        getattr(cls(config=config, split=s), method)() for s in ("train", "val", "test")
+    )
+
+
 def create_dataloaders(
     config: Config,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     match config.experiment_config.dataset_name:
-        case Datasets.BLACK_SCHOLES | Datasets.BERGOMI | Datasets.ROUGH_BERGOMI:
-            from taming_the_ito_lyon.data.rough_volatility import RoughVolatilityDataset
+        case Datasets.SIMPLE_RBERGOMI:
+            from taming_the_ito_lyon.data.simple_rough_volatility import (
+                SimpleRoughVolatilityDataset,
+            )
 
-            train = RoughVolatilityDataset(
-                config=config,
-                split="train",
-            ).make_array_source()
-            val = RoughVolatilityDataset(
-                config=config,
-                split="val",
-            ).make_array_source()
-            test = RoughVolatilityDataset(
-                config=config,
-                split="test",
-            ).make_array_source()
+            train, val, test = _splits(SimpleRoughVolatilityDataset, config, disk=False)
+        case Datasets.SYNTHETIC_GBM:
+            from taming_the_ito_lyon.data.synthetic_gbm import SyntheticGBMDataset
+
+            train, val, test = _splits(SyntheticGBMDataset, config, disk=False)
         case Datasets.SG_SO3_SIMULATION:
             from taming_the_ito_lyon.data.so3_dynamics_sim import SO3DynamicsSim
 
-            train = SO3DynamicsSim(
-                config=config,
-                split="train",
-            ).make_disk_source()
-            val = SO3DynamicsSim(
-                config=config,
-                split="val",
-            ).make_disk_source()
-            test = SO3DynamicsSim(
-                config=config,
-                split="test",
-            ).make_disk_source()
+            train, val, test = _splits(SO3DynamicsSim, config, disk=True)
+        case (
+            Datasets.OXFORD_MULTIMOTION_STATIC
+            | Datasets.OXFORD_MULTIMOTION_TRANSLATIONAL
+            | Datasets.OXFORD_MULTIMOTION_UNCONSTRAINED
+        ):
+            from taming_the_ito_lyon.data.oxford_multimotion import (
+                OxfordMultimotionDataset,
+            )
+
+            train, val, test = _splits(OxfordMultimotionDataset, config, disk=True)
+        case Datasets.SPD_WISHART_DIFFUSION:
+            from taming_the_ito_lyon.data.spd_wishart_diffusion import (
+                SPDWishartDiffusionDataset,
+            )
+
+            train, val, test = _splits(SPDWishartDiffusionDataset, config, disk=True)
+        case Datasets.PPG_DALIA:
+            from pathlib import Path
+
+            from cyreal.datasets import PPGDaliaDataset
+            from cyreal.transforms import MapTransform
+
+            def make_ppg_source(
+                split: str,
+                ordering: str,
+            ):
+                source = PPGDaliaDataset.make_disk_source(
+                    split=split,
+                    cache_dir=Path("data/"),
+                    ordering=ordering,
+                )
+                multirate_spec = getattr(source, "multirate_spec", None)
+
+                spec = dict(source.element_spec())
+                solution_spec = spec["solution"]
+                spec["solution"] = jax.ShapeDtypeStruct(
+                    shape=(*solution_spec.shape, 1),
+                    dtype=solution_spec.dtype,
+                )
+                source = MapTransform(
+                    fn=lambda batch, mask: {
+                        **batch,
+                        "solution": batch["solution"][..., None],
+                    },
+                    element_spec_override=spec,
+                )(source)
+                if multirate_spec is not None:
+                    source.multirate_spec = multirate_spec
+                return source
+
+            train = make_ppg_source("train", "shuffle")
+            val = make_ppg_source("val", "sequential")
+            test = make_ppg_source("test", "sequential")
         case _:
             raise ValueError(
                 f"Unknown dataset name: {config.experiment_config.dataset_name}"
             )
 
-    dataloaders: list[DataLoader] = []
-    for source in [train, val, test]:
-        pipeline = [
-            source,
-            BatchTransform(
-                batch_size=config.experiment_config.batch_size, drop_last=True
-            ),
-            DevicePutTransform(),
-        ]
-        dataloader = DataLoader(pipeline)
-        dataloader.init_state(jax.random.key(config.experiment_config.seed))
-        dataloaders.append(dataloader)
-    return dataloaders[0], dataloaders[1], dataloaders[2]  # train, val, test
+    def _make_loader(source: object) -> DataLoader:
+        loader = DataLoader(
+            [
+                source,
+                BatchTransform(
+                    batch_size=config.experiment_config.batch_size, drop_last=True
+                ),
+            ]
+        )
+        loader.init_state(jax.random.key(config.experiment_config.seed))
+        return loader
+
+    return _make_loader(train), _make_loader(val), _make_loader(test)
+
+
+def _sample_brownian_controls_on_grid(
+    ts: jax.Array,
+    key: jax.Array,
+    *,
+    batch_size: int,
+    driver_dim: int,
+    anchor_at_basepoint: bool,
+) -> jax.Array:
+    import jax.numpy as jnp
+    import jax.random as jr
+
+    timesteps = int(ts.shape[0]) - 1
+    if timesteps <= 0:
+        raise ValueError(f"ts must have length >= 2, got {ts.shape[0]}")
+
+    dt = ts[1:] - ts[:-1]
+    increments = (
+        jr.normal(
+            key,
+            (int(batch_size), timesteps, int(driver_dim)),
+            dtype=ts.dtype,
+        )
+        * jnp.sqrt(dt)[None, :, None]
+    )
+    values = jnp.concatenate(
+        [
+            jnp.zeros((int(batch_size), 1, int(driver_dim)), dtype=ts.dtype),
+            jnp.cumsum(increments, axis=1),
+        ],
+        axis=1,
+    )
+    if anchor_at_basepoint:
+        values = values - values[:, :1]
+    times = jnp.broadcast_to(ts[None, :, None], (int(batch_size), ts.shape[0], 1))
+    return jnp.concatenate([times, values], axis=-1)
 
 
 def create_unconditional_control_sampler(
     *,
-    driver_kind: UnconditionalDriverKind,
     driver_dim: int,
-    hurst: float,
+    anchor_at_basepoint: bool = True,
 ) -> Callable[[jax.Array, jax.Array], jax.Array]:
     """
     Create an unconditional control sampler.
@@ -322,64 +518,23 @@ def create_unconditional_control_sampler(
     where the leading channel is `ts` and the remaining channels are the sampled
     driver values on the same grid.
     """
-    import jax.numpy as jnp
-    import jax.random as jr
-    from stochastax.controls.drivers import (
-        bm_driver,
-        fractional_bm_driver,
-        riemann_liouville_driver,
-    )
-
-    def with_time(ts: jax.Array, values: jax.Array) -> jax.Array:
-        return jnp.concatenate([ts[:, None], values], axis=-1)
-
-    def anchor_at_basepoint(values: jax.Array) -> jax.Array:
-        """Anchor the path at the origin without changing its length.
-
-        Note: "basepoint augmentation" in the signature literature often means
-        *prepending an extra point* at the start of the path. In this codebase the
-        model/targets assume a fixed length `T`, so instead we simply translate the
-        path to start at 0 (which does not affect signatures, as they depend on
-        increments).
-        """
-        return values - values[:1]
 
     def sample(ts: jax.Array, key: jax.Array) -> jax.Array:
-        timesteps = int(ts.shape[0]) - 1
-        if timesteps <= 0:
-            raise ValueError(f"ts must have length >= 2, got {ts.shape[0]}")
-
-        if driver_kind == UnconditionalDriverKind.BM:
-            values = bm_driver(key, timesteps=timesteps, dim=driver_dim).path
-            values = anchor_at_basepoint(values)
-            return with_time(ts, values)
-
-        if driver_kind == UnconditionalDriverKind.FBM:
-            values = fractional_bm_driver(
-                key, timesteps=timesteps, dim=driver_dim, hurst=float(hurst)
-            ).path
-            values = anchor_at_basepoint(values)
-            return with_time(ts, values)
-
-        if driver_kind == UnconditionalDriverKind.RL:
-            bm_key, rl_key = jr.split(key, 2)
-            bm_path = bm_driver(bm_key, timesteps=timesteps, dim=driver_dim)
-            values = riemann_liouville_driver(
-                rl_key, timesteps=timesteps, hurst=float(hurst), bm_path=bm_path
-            ).path
-            values = anchor_at_basepoint(values)
-            return with_time(ts, values)
-
-        raise ValueError(f"Unknown driver_kind: {driver_kind}")
+        return _sample_brownian_controls_on_grid(
+            ts,
+            key,
+            batch_size=1,
+            driver_dim=driver_dim,
+            anchor_at_basepoint=anchor_at_basepoint,
+        )[0]
 
     return sample
 
 
 def create_unconditional_control_sampler_batched(
     *,
-    driver_kind: UnconditionalDriverKind,
-    driver_dim: int,
-    hurst: float,
+    driver_dim: int = 1,
+    anchor_at_basepoint: bool = True,
 ) -> Callable[[jax.Array, jax.Array, int], jax.Array]:
     """
     Create a batched unconditional control sampler.
@@ -388,19 +543,61 @@ def create_unconditional_control_sampler_batched(
     (batch_size, T, driver_dim + 1), where the leading channel is `ts` and the
     remaining channels are the sampled driver values on the same grid.
     """
-    import jax.random as jr
-
-    single_sampler = create_unconditional_control_sampler(
-        driver_kind=driver_kind, driver_dim=driver_dim, hurst=hurst
-    )
 
     def sample_batch(ts: jax.Array, key: jax.Array, batch_size: int) -> jax.Array:
-        keys = jr.split(key, batch_size)
-        return jax.vmap(lambda k: single_sampler(ts, k))(keys)
+        return _sample_brownian_controls_on_grid(
+            ts,
+            key,
+            batch_size=batch_size,
+            driver_dim=driver_dim,
+            anchor_at_basepoint=anchor_at_basepoint,
+        )
 
     # JIT this so unconditional mode doesn't run eager JAX work each step.
     # Compiles once per distinct (static) batch_size.
     return jax.jit(sample_batch, static_argnames=("batch_size",))
+
+
+def _first_driver_channel(driver_source: jax.Array, *, name: str) -> jax.Array:
+    if driver_source.ndim == 2:
+        return driver_source[..., None]
+    if driver_source.ndim == 3 and int(driver_source.shape[-1]) >= 2:
+        # Unconditional controls are time-augmented as (t, W).
+        return driver_source[..., 1:2]
+    if driver_source.ndim == 3 and int(driver_source.shape[-1]) == 1:
+        return driver_source
+    raise ValueError(
+        f"Expected {name} shaped (B,T), (B,T,1), or time-augmented (B,T,2+); "
+        f"got {driver_source.shape}."
+    )
+
+
+def _single_output_channel(output_path: jax.Array, *, name: str) -> jax.Array:
+    if output_path.ndim == 2:
+        return output_path[..., None]
+    if output_path.ndim == 3 and int(output_path.shape[-1]) == 1:
+        return output_path
+    raise ValueError(
+        f"Expected {name} shaped (B,T) or (B,T,1); got {output_path.shape}."
+    )
+
+
+def _simple_bergomi_joint_driver_output_path(
+    *,
+    driver_source: jax.Array,
+    output_path: jax.Array,
+    driver_name: str,
+    output_name: str,
+) -> jax.Array:
+    """Build the joint value path (W, X) used by the simple-Bergomi branched loss."""
+    driver = _first_driver_channel(driver_source, name=driver_name)
+    output = _single_output_channel(output_path, name=output_name)
+    if driver.shape[:2] != output.shape[:2]:
+        raise ValueError(
+            f"{driver_name} and {output_name} must align in batch/time, got "
+            f"{driver.shape} and {output.shape}."
+        )
+    return jnp.concatenate([driver, output], axis=-1)
 
 
 def create_grad_batch_loss_fns(
@@ -408,8 +605,9 @@ def create_grad_batch_loss_fns(
     *,
     output_path_dim: int | None = None,
 ) -> tuple[
-    Callable[[Model, jax.Array, jax.Array], tuple[jax.Array, optax.Updates]],
-    Callable[[Model, jax.Array, jax.Array], jax.Array],
+    Callable[[Model, jax.Array, jax.Array, jax.Array], tuple[jax.Array, optax.Updates]],
+    Callable[[Model, jax.Array, jax.Array, jax.Array], jax.Array],
+    Callable[[jax.Array, jax.Array, jax.Array, jax.Array], jax.Array],
 ]:
     """
     Create (grad_fn, batch_loss_fn) for training and evaluation.
@@ -420,11 +618,18 @@ def create_grad_batch_loss_fns(
     where `control_values_b` is a batch of control paths that will be fed to the model.
     """
     from taming_the_ito_lyon.training.losses import (
+        _maybe_unvech_spd,
+        branched_signature_kernel_score,
+        frobenius_loss,
         mse_loss,
         rotational_geodesic_loss,
-        truncated_sig_loss_time_augmented,
-        frobenius_loss,
-        weighted_truncated_signature_score,
+        signature_kernel_score,
+    )
+
+    loss_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None
+    base_branched_loss_fn: Callable[..., jax.Array] | None = None
+    use_simple_bergomi_joint_path = (
+        config.experiment_config.dataset_name == Datasets.SIMPLE_RBERGOMI
     )
 
     match config.experiment_config.loss:
@@ -447,40 +652,134 @@ def create_grad_batch_loss_fns(
             # matters (e.g. matching initial level "h0"/v0), then we must explicitly
             # encode it. We do that via a zero-basepoint prepend, which makes x0 an
             # increment and therefore visible to signature features.
-            loss_fn = truncated_sig_loss_time_augmented(
-                value_dim=int(output_path_dim),
+            sigker_value_dim = (
+                2 if use_simple_bergomi_joint_path else int(output_path_dim)
+            )
+            loss_fn = signature_kernel_score(
+                value_dim=int(sigker_value_dim),
                 anchor_at_start=False,
                 prepend_zero_basepoint=True,
             )
-        case LossType.SIGKER_WEIGHTED:
-            raise NotImplementedError("SIGKER_WEIGHTED loss not implemented yet")
-            # if output_path_dim is None:
-            #     raise ValueError(
-            #         "output_path_dim must be provided when loss_type is SIGKER so the "
-            #         "Hopf algebra can be constructed outside of jit."
-            #     )
-            # loss_fn = weighted_truncated_signature_score(
-            #     depth=4,
-            #     ambient_dim=int(output_path_dim),
-            # )
+        case LossType.SIGKER_BRANCHED:
+            if output_path_dim is None:
+                raise ValueError(
+                    "output_path_dim must be provided when loss_type is SIGKER_BRANCHED so the "
+                    "Hopf algebra can be constructed outside of jit."
+                )
+            branched_x_dim = (
+                2 if use_simple_bergomi_joint_path else int(output_path_dim)
+            )
+            base_branched_loss_fn = branched_signature_kernel_score(
+                # Keep pySigLib CUDA branched forward/backward inside kernel limits.
+                # SPD + time augmentation has dim=7; depth=3 fits the tree-count
+                # limit but the corrected CUDA backprop launch can fail.
+                depth=3,
+                use_planar=False,
+                use_time=True,
+                x_dim=int(branched_x_dim),
+                prepend_zero_basepoint=True,
+            )
         case _:
             raise ValueError(f"Unknown loss type: {config.experiment_config.loss}")
+
+    if loss_fn is None and base_branched_loss_fn is None:
+        raise RuntimeError("No base loss configured.")
+
+    use_spd = config.experiment_config.manifold == ManifoldType.SPD
+
+    def _compute_loss(
+        preds: jax.Array,
+        target_b: jax.Array,
+        control_values_b: jax.Array,
+        gt_driver_b: jax.Array,
+    ) -> jax.Array:
+        if (
+            config.experiment_config.dataset_name == Datasets.PPG_DALIA
+            and preds.ndim >= 2
+            and target_b.ndim >= 2
+            and int(preds.shape[1]) != int(target_b.shape[1])
+        ):
+            preds = jax.image.resize(
+                preds,
+                shape=(int(preds.shape[0]), int(target_b.shape[1]), *preds.shape[2:]),
+                method="linear",
+            )
+        if config.experiment_config.loss == LossType.SIGKER_BRANCHED:
+            assert base_branched_loss_fn is not None
+            if use_simple_bergomi_joint_path:
+                pred_joint = _simple_bergomi_joint_driver_output_path(
+                    driver_source=control_values_b,
+                    output_path=preds,
+                    driver_name="control_values_b",
+                    output_name="preds",
+                )
+                target_joint = _simple_bergomi_joint_driver_output_path(
+                    driver_source=gt_driver_b,
+                    output_path=target_b,
+                    driver_name="gt_driver_b",
+                    output_name="target_b",
+                )
+                return base_branched_loss_fn(pred_joint, target_joint)
+            target_cov = (
+                gt_driver_b
+                if config.experiment_config.dataset_name
+                == Datasets.SPD_WISHART_DIFFUSION
+                else None
+            )
+            return base_branched_loss_fn(preds, target_b, target_cov=target_cov)
+        if (
+            config.experiment_config.loss == LossType.SIGKER
+            and use_simple_bergomi_joint_path
+        ):
+            assert loss_fn is not None
+            pred_joint = _simple_bergomi_joint_driver_output_path(
+                driver_source=control_values_b,
+                output_path=preds,
+                driver_name="control_values_b",
+                output_name="preds",
+            )
+            target_joint = _simple_bergomi_joint_driver_output_path(
+                driver_source=gt_driver_b,
+                output_path=target_b,
+                driver_name="gt_driver_b",
+                output_name="target_b",
+            )
+            return loss_fn(pred_joint, target_joint)
+        if use_spd:
+            preds = _maybe_unvech_spd(preds)
+            target_b = _maybe_unvech_spd(target_b)
+        assert loss_fn is not None
+        return loss_fn(preds, target_b)
 
     def batch_loss_fn(
         model: Model,
         control_values_b: jax.Array,
         target_b: jax.Array,
+        gt_driver_b: jax.Array,
     ) -> jax.Array:
-        preds = jax.vmap(model)(control_values_b)
-        loss = loss_fn(preds, target_b)
-        return loss
+        return _compute_loss(
+            jax.vmap(model)(control_values_b), target_b, control_values_b, gt_driver_b
+        )
 
-    return eqx.filter_value_and_grad(batch_loss_fn), batch_loss_fn
+    def loss_on_preds_fn(
+        preds: jax.Array,
+        target_b: jax.Array,
+        control_values_b: jax.Array,
+        gt_driver_b: jax.Array,
+    ) -> jax.Array:
+        return _compute_loss(preds, target_b, control_values_b, gt_driver_b)
+
+    return (
+        eqx.filter_value_and_grad(batch_loss_fn),
+        batch_loss_fn,
+        eqx.filter_jit(loss_on_preds_fn),
+    )
 
 
 def configure_jax() -> None:
     """Configure global JAX settings (matmul precision and persistent compilation cache)."""
     import os
+
     import lovely_jax
 
     lovely_jax.monkey_patch()
@@ -500,7 +799,12 @@ def create_results_gathering_fn(
     config: Config,
 ) -> ResultsGatheringFn:
     match config.experiment_config.dataset_name:
-        case Datasets.BLACK_SCHOLES | Datasets.BERGOMI | Datasets.ROUGH_BERGOMI:
+        case (
+            Datasets.BLACK_SCHOLES
+            | Datasets.BERGOMI
+            | Datasets.ROUGH_BERGOMI
+            | Datasets.SIMPLE_RBERGOMI
+        ):
             from taming_the_ito_lyon.training.results_gathering_fns import (
                 get_rough_volatility_results,
             )
@@ -512,7 +816,63 @@ def create_results_gathering_fn(
             )
 
             return get_sg_so3_simulation_results
+        case (
+            Datasets.OXFORD_MULTIMOTION_STATIC
+            | Datasets.OXFORD_MULTIMOTION_TRANSLATIONAL
+            | Datasets.OXFORD_MULTIMOTION_UNCONSTRAINED
+        ):
+            from taming_the_ito_lyon.training.results_gathering_fns import (
+                get_sg_so3_simulation_results,
+            )
+
+            return get_sg_so3_simulation_results
+        case Datasets.SPD_WISHART_DIFFUSION:
+            from taming_the_ito_lyon.training.results_gathering_fns import (
+                get_spd_covariance_results,
+            )
+
+            return get_spd_covariance_results
+        case Datasets.PPG_DALIA:
+            from taming_the_ito_lyon.training.results_gathering_fns import (
+                get_ppg_dalia_results,
+            )
+
+            return get_ppg_dalia_results
+        case Datasets.SYNTHETIC_GBM:
+            from taming_the_ito_lyon.training.results_gathering_fns import (
+                get_generic_path_results,
+            )
+
+            return get_generic_path_results
         case _:
             raise ValueError(
                 f"Unknown dataset name: {config.experiment_config.dataset_name}"
             )
+
+
+if __name__ == "__main__":
+    import argparse
+
+    from taming_the_ito_lyon.config import load_toml_config
+
+    parser = argparse.ArgumentParser(
+        description="Smoke-test dataloader creation from a config file."
+    )
+    parser.add_argument(
+        "--config",
+        type=str,
+        required=True,
+        help="Path to TOML config",
+    )
+    args = parser.parse_args()
+
+    config = load_toml_config(args.config)
+    train_loader, val_loader, test_loader = create_dataloaders(config)
+    train_state = train_loader.init_state(jax.random.key(config.experiment_config.seed))
+    batch, _, _ = jax.jit(train_loader.next)(train_state)
+
+    print(f"Loaded dataset: {config.experiment_config.dataset_name.name}")
+    print(
+        f"Train/Val/Test steps: {train_loader.steps_per_epoch}/{val_loader.steps_per_epoch}/{test_loader.steps_per_epoch}"
+    )
+    print("Batch shapes:", {k: tuple(v.shape) for k, v in batch.items()})

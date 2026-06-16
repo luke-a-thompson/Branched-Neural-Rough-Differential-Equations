@@ -10,6 +10,11 @@ import numpy as np
 from cyreal.datasets.dataset_protocol import DatasetProtocol
 from cyreal.datasets.time_utils import prepare_seq_to_seq_windows
 from taming_the_ito_lyon.config import Config
+from taming_the_ito_lyon.data.integrity_checks import (
+    ensure_b_w_l_c,
+    validate_window_alignment,
+)
+from taming_the_ito_lyon.utils.so3 import log_map
 from cyreal.sources import DiskSource
 
 
@@ -23,15 +28,19 @@ class SO3DynamicsSim(DatasetProtocol):
     _num_windows: int = field(init=False, repr=False)
     _num_examples: int = field(init=False, repr=False)
     _dataset_len: int = field(init=False, repr=False)
+    _driver_channels: int = field(init=False, repr=False)
 
     def __post_init__(self) -> None:
         self.ordering = "shuffle" if self.split == "train" else "sequential"
 
         data = np.load(self.config.experiment_config.dataset_name.value)
-        dt_sim = float(np.asarray(data["dt"]))
-        skip = int(0.1 / dt_sim)
+        dt_sim = float(
+            np.asarray(data["dt"])
+        )  # This is a scalar dt for the whole simulation
+        skip = int(0.1 / dt_sim)  # keep every 10th frame
         if skip < 1:
             skip = 1
+        # print(f"Downsample rate: {skip} (effective dt = {dt_sim * skip})")
 
         train_fraction = float(self.config.experiment_config.train_fraction)
         val_fraction = float(self.config.experiment_config.val_fraction)
@@ -76,51 +85,33 @@ class SO3DynamicsSim(DatasetProtocol):
         #
         # Historically this was hard-coded for L=20; instead, normalize by ensuring the
         # channel axis (C=9) is last.
-        def _ensure_b_w_l_c(windows: np.ndarray) -> np.ndarray:
-            if windows.ndim != 4:
-                return windows
-            # Expect one of the last two axes to be the SO(3) "channels" axis (9).
-            if int(windows.shape[-1]) == 9:
-                return windows  # already (B, W, L, C)
-            if int(windows.shape[-2]) == 9:
-                return np.swapaxes(windows, -1, -2)  # (B, W, C, L) -> (B, W, L, C)
-            return windows
+        driver_np = ensure_b_w_l_c("driver", driver_np)
+        solution_np = ensure_b_w_l_c("solution", solution_np)
+        validate_window_alignment(driver_np, solution_np)
 
-        driver_np = _ensure_b_w_l_c(driver_np)
-        solution_np = _ensure_b_w_l_c(solution_np)
+        if self.config.experiment_config.uses_flat_so3_driver:
+            driver_features_np = np.asarray(driver_np, dtype=np.float32)
+        else:
+            # Use a minimal 3D coordinate chart for SO(3) controls.
+            #
+            # Important: we use the absolute log-map log(R_t), not a window-relative
+            # chart log(R_0^T R_t), so the initial orientation remains visible to the
+            # model through x0.
+            driver_rotmats = jnp.asarray(driver_np, dtype=jnp.float32).reshape(
+                driver_np.shape[0],
+                driver_np.shape[1],
+                driver_np.shape[2],
+                3,
+                3,
+            )
+            driver_features_np = np.asarray(log_map(driver_rotmats), dtype=np.float32)
 
-        if driver_np.ndim != 4:
-            raise ValueError(
-                f"Expected driver windows to have shape (B, W, L, C), got {driver_np.shape}"
-            )
-        if solution_np.ndim != 4:
-            raise ValueError(
-                f"Expected solution windows to have shape (B, W, L, C), got {solution_np.shape}"
-            )
-        if int(driver_np.shape[-1]) != 9:
-            raise ValueError(
-                "Expected driver windows to have channels=9 on the last axis, "
-                f"got shape={driver_np.shape}"
-            )
-        if int(solution_np.shape[-1]) != 9:
-            raise ValueError(
-                "Expected solution windows to have channels=9 on the last axis, "
-                f"got shape={solution_np.shape}"
-            )
-        if (
-            driver_np.shape[0] != solution_np.shape[0]
-            or driver_np.shape[1] != solution_np.shape[1]
-        ):
-            raise ValueError(
-                "Driver/solution window counts are not aligned: "
-                f"driver={driver_np.shape}, solution={solution_np.shape}"
-            )
-
-        self._driver_np = driver_np
+        self._driver_np = driver_features_np
         self._solution_np = solution_np
         self._num_examples = int(driver_np.shape[0])  # B*4
         self._num_windows = int(driver_np.shape[1])  # windows per example
         self._dataset_len = int(self._num_examples * self._num_windows)
+        self._driver_channels = int(driver_features_np.shape[-1])
 
     def __len__(self) -> int:
         # Flattened sample count: one sample per (example, window_start)
@@ -132,7 +123,7 @@ class SO3DynamicsSim(DatasetProtocol):
             raise IndexError(f"Index out of range: {index} (len={self._dataset_len})")
         wi = index % self._num_windows
         bi = index // self._num_windows
-        driver = jnp.asarray(self._driver_np[bi, wi], dtype=jnp.float32)  # (T, 9)
+        driver = jnp.asarray(self._driver_np[bi, wi], dtype=jnp.float32)  # (T, C)
         solution_flat = jnp.asarray(
             self._solution_np[bi, wi], dtype=jnp.float32
         )  # (T, 9)
@@ -150,13 +141,14 @@ class SO3DynamicsSim(DatasetProtocol):
 
         _, _, ctx_len, channels = driver_np.shape
         _, _, tgt_len, channels2 = solution_np.shape
-        if channels2 != channels:
-            raise ValueError(
-                f"Driver/solution channel mismatch: driver={channels}, solution={channels2}"
-            )
         if int(channels) != 9:
+            if int(channels) != 3:
+                raise ValueError(
+                    f"Expected SO(3) driver channels to be either 3 (Lie algebra) or 9 (flattened matrices), got channels={channels}. Total shape: {driver_np.shape}"
+                )
+        if int(channels2) != 9:
             raise ValueError(
-                f"Expected SO(3) rotations flattened as 9 channels, got channels={channels}. Total shape: {driver_np.shape}"
+                f"Expected SO(3) targets flattened as 9 channels, got channels={channels2}. Total shape: {solution_np.shape}"
             )
 
         num_windows = int(self._num_windows)
@@ -187,3 +179,12 @@ class SO3DynamicsSim(DatasetProtocol):
             ordering=self.ordering,
             prefetch_size=self.config.experiment_config.batch_size,
         )
+
+
+if __name__ == "__main__":
+    from taming_the_ito_lyon.config.config import load_toml_config
+
+    config = load_toml_config("configs/sg_so3_sim/nrde.toml")
+    dataset = SO3DynamicsSim(config, "train")
+    print(dataset._driver_np.shape)
+    print(dataset._solution_np.shape)

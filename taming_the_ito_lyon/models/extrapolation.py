@@ -260,84 +260,6 @@ class _PolynomialPath(diffrax.AbstractPath):
         return jnp.concatenate([jnp.array([1.0]), x_dot])
 
 
-class MLPScheme(eqx.Module):
-    """MLP-based extrapolation with data conditioning.
-
-    The MLP takes both time and a context vector (encoding of reconstruction data)
-    to produce outputs. This allows it to adapt to individual sequences while
-    still learning a general extrapolation function.
-
-    The context is produced by flattening the reconstruction segment into a
-    single vector and encoding it with an MLP.
-    """
-
-    encoder: eqx.nn.MLP
-    decoder: eqx.nn.MLP
-    input_dim: int = eqx.field(static=True)
-    context_dim: int = eqx.field(static=True)
-    n_recon: int = eqx.field(static=True)
-
-    def __init__(
-        self,
-        input_dim: int,
-        n_recon: int,
-        context_dim: int = 16,
-        hidden_dim: int = 32,
-        depth: int = 2,
-        *,
-        key: jax.Array,
-    ):
-        k1, k2 = jax.random.split(key)
-        self.input_dim = input_dim
-        self.context_dim = context_dim
-        self.n_recon = n_recon
-
-        # Encoder: maps reconstruction data to context vector
-        self.encoder = eqx.nn.MLP(
-            in_size=input_dim * n_recon,
-            out_size=context_dim,
-            width_size=hidden_dim,
-            depth=depth,
-            key=k1,
-        )
-
-        # Decoder: maps (time, context) to output
-        self.decoder = eqx.nn.MLP(
-            in_size=1 + context_dim,  # time + context
-            out_size=input_dim,
-            width_size=hidden_dim,
-            depth=depth,
-            key=k2,
-        )
-
-    def create_control(
-        self,
-        t_all: jax.Array,
-        x_all: jax.Array,
-        n_recon: int,
-    ) -> tuple[_MLPPath, jax.Array]:
-        if t_all.shape[0] < n_recon or x_all.shape[0] < n_recon:
-            raise ValueError(
-                f"t_all and x_all must have length >= n_recon, got {t_all.shape[0]} and {x_all.shape[0]}"
-            )
-        if n_recon != self.n_recon:
-            raise ValueError(
-                f"n_recon mismatch: scheme was initialized with {self.n_recon}, got {n_recon}"
-            )
-        x_recon = x_all[:n_recon]
-
-        # Encode reconstruction data into context (flattened)
-        context = self.encoder(jnp.reshape(x_recon, (-1,)))  # (context_dim,)
-
-        control = _MLPPath(
-            decoder=self.decoder,
-            context=context,
-            t0=float(t_all[0]),
-            t1=float(t_all[-1]),
-        )
-        return control, t_all
-
-
 class PiecewiseMLPScheme(eqx.Module):
     """Piecewise MLP extrapolation: ground-truth recon, MLP for future.
 
@@ -627,7 +549,6 @@ def create_scheme(
         - 'hermite': Polynomial from last cubic segment (can be unstable)
         - 'sg': Smooth polynomial extrapolation (fitted to all recon data)
         - 'so3_sg': SO(3) manifold-aware SG for rotation data (flattened as 9D)
-        - 'mlp': Learned extrapolation (MLP outputs for any time)
         - 'piecewiseMLP': Ground-truth reconstruction + MLP future extrapolation
     """
     match name:
@@ -643,17 +564,6 @@ def create_scheme(
             )
         case "so3_sg":
             return SO3SGScheme(poly_order=poly_order, num_points=num_points, key=key)
-        case "mlp":
-            if input_dim is None or key is None or num_points is None:
-                raise ValueError("'mlp' scheme requires input_dim, num_points, and key")
-            return MLPScheme(
-                input_dim=input_dim,
-                n_recon=num_points,
-                context_dim=hidden_dim // 2,  # Use half hidden_dim for context
-                hidden_dim=hidden_dim,
-                depth=mlp_depth,
-                key=key,
-            )
         case "piecewiseMLP":
             if input_dim is None or key is None or num_points is None:
                 raise ValueError(
@@ -669,5 +579,5 @@ def create_scheme(
             )
         case _:
             raise ValueError(
-                f"Unknown scheme: {name}. Use 'linear', 'hermite', 'sg', 'so3_sg', 'mlp', or 'piecewiseMLP'"
+                f"Unknown scheme: {name}. Use 'linear', 'hermite', 'sg', 'so3_sg', or 'piecewiseMLP'"
             )

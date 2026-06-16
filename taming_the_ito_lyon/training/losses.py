@@ -1,10 +1,28 @@
 from __future__ import annotations
 
-import math
+from typing import Callable
+
 import jax
 import jax.numpy as jnp
-from typing import Callable, Optional, Sequence, Union, Literal
+from stochastax.manifolds.spd import SPDManifold
+
 from taming_the_ito_lyon.config.config import Config
+
+
+def _maybe_wrap_extrapolation(
+    loss: Callable[[jax.Array, jax.Array], jax.Array],
+    config: Config,
+) -> Callable[[jax.Array, jax.Array], jax.Array]:
+    if config.experiment_config.extrapolation_scheme is None:
+        return loss
+    n_recon = config.experiment_config.n_recon
+
+    def extrapolation_loss(pred: jax.Array, target: jax.Array) -> jax.Array:
+        pred = pred[n_recon:]
+        target = target[n_recon:]
+        return loss(pred, target) + loss(target, pred)
+
+    return extrapolation_loss
 
 
 def mse_loss(
@@ -20,382 +38,395 @@ def mse_loss(
 def frobenius_loss(
     config: Config,
 ) -> Callable[[jax.Array, jax.Array], jax.Array]:
-    """
-    Frobenius loss between predicted and target rotation matrices.
+    """Frobenius loss between predicted and target rotation matrices."""
 
-    If extrapolation_scheme is set, we compute the loss on the predicted and target
-    rotation matrices for the reconstruction and future parts separately.
-
-    Args:
-        config: Config object
-
-    Returns:
-        Loss function
-    """
-    n_recon = config.experiment_config.n_recon
-
-    def loss(
-        pred: jax.Array,
-        target: jax.Array,
-    ) -> jax.Array:
+    def loss(pred: jax.Array, target: jax.Array) -> jax.Array:
         return jnp.mean(jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1)))
 
-    def extrapolation_loss(pred: jax.Array, target: jax.Array) -> jax.Array:
-        pred = pred[n_recon:]
-        target = target[n_recon:]
-        recon_loss = loss(pred, target)
-        future_loss = loss(target, pred)
-        return recon_loss + future_loss
-
-    if config.experiment_config.extrapolation_scheme is not None:
-        return extrapolation_loss
-    else:
-        return loss
+    return _maybe_wrap_extrapolation(loss, config)
 
 
 def rotational_geodesic_loss(
     config: Config,
 ) -> Callable[[jax.Array, jax.Array], jax.Array]:
-    """
-    Rotational Geodesic Error (RGE) loss.
-    RGE(R1, R2) = 2 * arcsin(||R2 - R1||_F / (2√2))
-
-    Args:
-        config: Config object
-    """
-    n_recon = config.experiment_config.n_recon
-
-    def loss(
-        pred: jax.Array,
-        target: jax.Array,
-    ) -> jax.Array:
-        """
-        Compute the Rotational Geodesic Error (RGE) loss.
-        RGE(R1, R2) = 2 * arcsin(||R2 - R1||_F / (2√2))
-
-        Args:
-            pred: Predicted rotation matrices
-            target: Target rotation matrices
-
-        Returns:
-            Mean RGE loss
-        """
-        assert pred.shape == target.shape, (
-            f"pred and target must have the same shape, got {pred.shape} and {target.shape}"
-        )
-        assert pred.shape[-1] == pred.shape[-2], (
-            "pred and target must be square matrices"
-        )
-        # NOTE: The closed-form RGE formula assumes both inputs are valid rotation matrices.
-        # In practice, simulator outputs can drift slightly off SO(3) and floating point error
-        # can push the arcsin argument marginally outside [-1, 1], producing NaNs.
-        frobenius_norm = jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1))
-        denom = 2.0 * jnp.sqrt(2.0)
-        ratio = frobenius_norm / denom
-        # Also avoid the arcsin derivative singularity at 1.0, which can create `inf`
-        # gradients and quickly destabilize optimization early in training.
-        eps = jnp.asarray(1e-5, dtype=ratio.dtype)
-        ratio = jnp.clip(ratio, a_min=0.0, a_max=1.0 - eps)
-        rge_rad = 2.0 * jnp.arcsin(ratio)
-        rge_deg = rge_rad * (180.0 / jnp.pi)
-        return jnp.mean(rge_deg)
-
-    def extrapolation_loss(pred: jax.Array, target: jax.Array) -> jax.Array:
-        pred = pred[n_recon:]
-        target = target[n_recon:]
-        recon_loss = loss(pred, target)
-        future_loss = loss(target, pred)
-        return recon_loss + future_loss
-
-    if config.experiment_config.extrapolation_scheme is not None:
-        return extrapolation_loss
-    else:
-        return loss
-
-
-def truncated_sig_loss(
-    depth: int = 6,
-    ambient_dim: int = 1,
-) -> Callable[[jax.Array, jax.Array], jax.Array]:
-    """
-    Create a signature(-like) loss using truncated *log signatures* as features.
-
-    We compute a truncated log signature for each path (depth=`depth`), flatten
-    it into a feature vector, then apply a dot-product kernel.
-
-    This loss implements the **signature kernel score** (see e.g. Eq. in the
-    screenshot you referenced):
-
-        φ(P, y) := E_{x,x'~P}[k(x,x')] - 2 E_{x~P}[k(x,y)]
-
-    """
-    from stochastax.control_lifts import compute_path_signature
-    from stochastax.hopf_algebras.hopf_algebras import ShuffleHopfAlgebra
-
-    hopf = ShuffleHopfAlgebra.build(ambient_dim=int(ambient_dim), depth=int(depth))
+    """Rotational Geodesic Error: RGE(R1, R2) = 2 * arcsin(||R2 - R1||_F / (2√2))."""
 
     def loss(pred: jax.Array, target: jax.Array) -> jax.Array:
-        # following https://arxiv.org/pdf/2305.16274 remark 3.2
         assert pred.shape == target.shape, (
             f"pred and target must have the same shape, got {pred.shape} and {target.shape}"
         )
-        assert int(pred.shape[-1]) == int(ambient_dim), (
-            f"Expected path feature dimension {int(ambient_dim)}, got {int(pred.shape[-1])}. "
-            "Pass the correct `ambient_dim` when constructing the loss."
+        assert pred.shape[-1] == pred.shape[-2], "pred/target must be square matrices"
+        # Closed-form RGE assumes valid rotations; simulator drift + float error can push
+        # the arcsin argument marginally outside [-1, 1]. Clip below 1 to also avoid the
+        # arcsin derivative singularity at 1.0 (inf gradients, unstable early training).
+        ratio = jnp.linalg.norm(pred - target, ord="fro", axis=(-2, -1)) / (
+            2.0 * jnp.sqrt(2.0)
         )
+        eps = jnp.asarray(1e-5, dtype=ratio.dtype)
+        rge_rad = 2.0 * jnp.arcsin(jnp.clip(ratio, min=0.0, max=1.0 - eps))
+        return jnp.mean(rge_rad * (180.0 / jnp.pi))
 
-        def _phi(path: jax.Array) -> jax.Array:
-            sig = compute_path_signature(
-                path=path,
-                depth=depth,
-                hopf=hopf,
-                mode="full",
-            )
-            return sig.flatten()
-
-        phi_pred = jax.vmap(_phi)(pred)
-        phi_target = jax.vmap(_phi)(target)
-
-        # Dot-product kernel on features: k(x, y) = <phi(x), phi(y)>
-        k_pp = jnp.mean(phi_pred @ phi_pred.T)
-        k_pt = jnp.mean(phi_pred @ phi_target.T)
-
-        # Expected kernel score averaged over y~target:
-        # E_y[ φ(P, y) ] = E_{x,x'~P}[k(x,x')] - 2 E_{x~P, y~target}[k(x,y)]
-        return k_pp - 2.0 * k_pt
-
-    return loss
+    return _maybe_wrap_extrapolation(loss, config)
 
 
-def truncated_sig_loss_time_augmented(
+def signature_kernel_score(
     *,
     depth: int = 5,
     value_dim: int = 1,
+    use_time: bool = True,
     anchor_at_start: bool = True,
     prepend_zero_basepoint: bool = True,
 ) -> Callable[[jax.Array, jax.Array], jax.Array]:
-    """Signature-kernel score loss on time-augmented paths.
+    """Signature-kernel score loss, optionally on time-augmented paths.
 
-    This is the recommended variant for **1D outputs** where plain signatures
-    largely collapse to increment-only information.
+    Recommended for 1D outputs where plain signatures collapse to increment-only
+    information. When `use_time=True`, pySigLib time-augments paths with t in
+    [0, 1]; uses truncated signatures as features with a dot-product kernel score.
 
-    We construct 2D paths (t, x_t) with t in [0, 1], then compute truncated
-    log-signatures as features and apply the same dot-product kernel score.
+    Accepts vector paths (B, T, C) or 3x3 matrix paths (B, T, 3, 3). Matrix paths are
+    converted inside the loss: SO(3) via log-map to (T, 3) when value_dim=3, SPD via
+    vech to (T, 6) when value_dim=6.
     """
-    from stochastax.control_lifts import compute_path_signature
-    from stochastax.hopf_algebras.hopf_algebras import ShuffleHopfAlgebra
+    from pysiglib.jax_api import sig
+    from taming_the_ito_lyon.utils.so3 import log_map
 
-    ambient_dim = int(value_dim) + 1
-    hopf = ShuffleHopfAlgebra.build(ambient_dim=int(ambient_dim), depth=int(depth))
+    depth_i = int(depth)
+    value_dim_i = int(value_dim)
+    if depth_i <= 0:
+        raise ValueError("depth must be >= 1")
+    if value_dim_i <= 0:
+        raise ValueError("value_dim must be >= 1")
+
+    def _to_euclidean(path: jax.Array) -> jax.Array:
+        # Matrix-valued paths are statically disambiguated via `value_dim`.
+        if not (path.ndim == 3 and path.shape[-2:] == (3, 3)):
+            return path
+        if value_dim_i == 3:
+            r0_t = jnp.swapaxes(path[:1], -1, -2)
+            return log_map(r0_t @ path)  # (T, 3)
+        if value_dim_i == 6:
+            return SPDManifold.vech(path)  # (T, 6)
+        raise ValueError(
+            f"Matrix paths require value_dim in (3, 6); got {value_dim_i}."
+        )
+
+    def _features(paths: jax.Array) -> jax.Array:
+        if anchor_at_start:
+            paths = paths - paths[:, :1]
+        if prepend_zero_basepoint:
+            paths = jnp.concatenate(
+                [jnp.zeros((paths.shape[0], 1, value_dim_i), dtype=paths.dtype), paths],
+                axis=1,
+            )
+        return sig(paths, depth_i, time_aug=use_time, end_time=1.0)
 
     def loss(pred: jax.Array, target: jax.Array) -> jax.Array:
         assert pred.shape == target.shape, (
             f"pred and target must have the same shape, got {pred.shape} and {target.shape}"
         )
-        assert int(pred.shape[-1]) == int(value_dim), (
-            f"Expected value dimension {int(value_dim)}, got {int(pred.shape[-1])}. "
-            "Pass the correct `value_dim` when constructing the loss."
-        )
-
-        length = int(pred.shape[-2])
-        ts = jnp.linspace(0.0, 1.0, length, dtype=pred.dtype)  # (T,)
-        ts_col = ts[:, None]  # (T, 1)
-
-        def _augment(path: jax.Array) -> jax.Array:
-            if anchor_at_start:
-                path = path - path[:1]
-            aug = jnp.concatenate([ts_col, path], axis=-1)  # (T, 1+value_dim)
-            if not prepend_zero_basepoint:
-                return aug
-
-            # Signatures/log-signatures depend on path *increments* (dx), hence are
-            # invariant to adding a constant offset to x. If we care about absolute
-            # level (e.g. matching x0 / "h0"), we must explicitly encode it.
-            #
-            # Prepending a zero basepoint makes the first increment equal to the
-            # initial level, which then appears in the signature features.
-            #
-            # Note: we duplicate t=0 at the first two points; this is fine for
-            # signature computation since it depends on increments, not on dt.
-            zero0 = jnp.zeros((1, int(ambient_dim)), dtype=aug.dtype)
-            return jnp.concatenate([zero0, aug], axis=0)  # (T+1, 1+value_dim)
-
-        def _phi(path: jax.Array) -> jax.Array:
-            aug = _augment(path)
-            sig = compute_path_signature(
-                path=aug,
-                depth=depth,
-                hopf=hopf,
-                mode="full",
+        is_matrix_3x3 = pred.ndim == 4 and pred.shape[-2:] == (3, 3)
+        if not is_matrix_3x3:
+            assert int(pred.shape[-1]) == value_dim_i, (
+                f"Expected value_dim={value_dim_i}, got {int(pred.shape[-1])}."
             )
-            return sig.flatten()
+        if int(pred.shape[1]) < 2:
+            return jnp.asarray(0.0, dtype=jnp.float32)
 
-        phi_pred = jax.vmap(_phi)(pred)
-        phi_target = jax.vmap(_phi)(target)
-
-        k_pp = jnp.mean(phi_pred @ phi_pred.T)
-        k_pt = jnp.mean(phi_pred @ phi_target.T)
-        return k_pp - 2.0 * k_pt
+        # pred is (B, T, ...); for matrix paths last two axes are (3, 3).
+        phi_pred = _features(jax.vmap(_to_euclidean)(pred))
+        phi_target = _features(jax.vmap(_to_euclidean)(target))
+        diff = jnp.mean(phi_pred, axis=0) - jnp.mean(phi_target, axis=0)
+        return jnp.sum(diff * diff)
 
     return loss
 
 
-def weighted_truncated_signature_score(
-    depth: int = 4,
-    ambient_dim: int = 1,
-    phi: Optional[
-        Union[
-            Literal["uniform", "exponential", "factorial"],
-            Callable[[int], float],
-            Sequence[float],
-            jax.Array,
-        ]
-    ] = "factorial",
-    include_level0: bool = True,
+def branched_signature_kernel_score(
     *,
-    time_augment: bool = True,
-    anchor_at_start: bool = True,
+    depth: int = 2,
+    use_planar: bool,
+    use_time: bool,
+    x_dim: int = 1,
     prepend_zero_basepoint: bool = True,
-) -> Callable[[jax.Array, jax.Array], jax.Array]:
+) -> Callable[[jax.Array, jax.Array, jax.Array | None], jax.Array]:
+    """Branched signature-kernel score loss (biased MMD^2 with dot-product kernel).
+
+    Uses pySigLib branched signatures. Quadratic covariation is injected through
+    pySigLib's per-segment `correction` parameter.
+
+    Shapes
+    ------
+    - pred_x / target_x: (B, T), (B, T, C), or SPD matrices (B, T, 3, 3) which are
+      converted to vech(X) internally.
+    - Optionally pass `target_cov` as a per-step bracket density side-channel
+      shaped (B, T, C*C) or (B, T, C, C).
+
+    Multi-channel path Y has shape (T, d) with d = use_time + x_dim. Quadratic
+    variation is either supplied by `target_cov` or estimated from x-increments.
     """
-    Weighted expected signature score (which equals the biased MMD^2 for the weighted
-    linear signature kernel).
+    import pysiglib
+    from pysiglib.jax_api import branched_sig
 
-    We define a weighted inner product on the truncated tensor algebra by
-        <a,b>_phi = sum_{k=0}^depth phi(k) <a_k, b_k>_k
-    and the induced kernel
-        k_phi(x,y) = <S^{<=depth}(x), S^{<=depth}(y)>_phi.
+    depth_i = int(depth)
+    x_dim_i = int(x_dim)
+    if depth_i <= 0:
+        raise ValueError("depth must be >= 1")
+    if x_dim_i <= 0:
+        raise ValueError("x_dim must be >= 1")
 
-    With the feature map Psi_phi(x) = concat_k sqrt(phi(k)) * vec(S_k(x)),
-    the score is
-        || E[Psi_phi(X)] - E[Psi_phi(Y)] ||^2
-    which is exactly the (biased) empirical MMD^2 for k_phi.
+    path_dim = x_dim_i
+    sig_dim = path_dim + (1 if use_time else 0)
+    pysiglib.prepare_branched_sig(
+        sig_dim,
+        depth_i,
+        time_aug=False,
+        planar=use_planar,
+    )
 
-    Notes
-    -----
-    - This assumes compute_path_signature returns signature levels concatenated by level,
-      with level-k having ambient_dim**k coordinates (word basis).
-    - Set include_level0=False if your signature vector omits the empty-word term.
-
-    Args:
-        depth: Truncation depth for the signature.
-        ambient_dim: Dimension of the value path space; if time_augment=True the
-            signature ambient dimension becomes ambient_dim + 1.
-        phi: Level weights. Can be one of {"uniform", "exponential", "factorial"}, a
-            callable mapping level k to weight, a sequence/array of weights, or None
-            (uniform weights).
-        include_level0: Whether to include level 0 (empty word) in the signature.
-        time_augment: If True, augment paths as (t, x_t) before computing signatures.
-        anchor_at_start: If True, subtract x0 before augmentation.
-        prepend_zero_basepoint: If True, prepend a zero basepoint after augmentation.
-
-    Returns:
-        Loss function that takes (pred, target) arrays and returns a scalar loss.
-    """
-    from stochastax.control_lifts import compute_path_signature
-    from stochastax.hopf_algebras.hopf_algebras import ShuffleHopfAlgebra
-
-    value_dim_int = int(ambient_dim)
-    effective_dim = value_dim_int + 1 if time_augment else value_dim_int
-    hopf = ShuffleHopfAlgebra.build(ambient_dim=effective_dim, depth=int(depth))
-
-    if include_level0:
-        level_sizes = [int(effective_dim**k) for k in range(0, int(depth) + 1)]
-        level_ids = list(range(0, int(depth) + 1))
-    else:
-        level_sizes = [int(effective_dim**k) for k in range(1, int(depth) + 1)]
-        level_ids = list(range(1, int(depth) + 1))
-
-    total_size = int(sum(level_sizes))
-
-    if phi is None or phi == "uniform":
-        weights = jnp.ones((len(level_ids),), dtype=jnp.float32)
-    elif phi == "exponential":
-        weights = jnp.asarray(
-            [float(math.exp(-k)) for k in level_ids], dtype=jnp.float32
+    def _ensure_btc(x: jax.Array, name: str) -> jax.Array:
+        # Accept (B,T), (B,T,C), or (B,T,3,3) SPD matrices.
+        if x.ndim == 2:
+            return x[..., None]
+        if x.ndim == 3:
+            return x
+        if x.ndim == 4 and x.shape[-2:] == (3, 3):
+            b, t = int(x.shape[0]), int(x.shape[1])
+            return SPDManifold.vech(x.reshape((b * t, 3, 3))).reshape((b, t, 6))
+        raise ValueError(
+            f"Expected {name} shaped (B,T), (B,T,C), or (B,T,3,3); got {x.shape}"
         )
-    elif phi == "factorial":
-        weights = jnp.asarray(
-            [float(1.0 / math.factorial(k)) for k in level_ids], dtype=jnp.float32
+
+    def _parse_target_cov(cov: jax.Array, B: int, T: int) -> jax.Array:
+        # Wishart dataset stores per-step bracket density for vech(X) as (B,T,C*C).
+        if cov.ndim == 3 and cov.shape == (B, T, x_dim_i * x_dim_i):
+            return cov.reshape((B, T, x_dim_i, x_dim_i))
+        if cov.ndim == 4 and cov.shape == (B, T, x_dim_i, x_dim_i):
+            return cov
+        raise ValueError(
+            f"target cov density must be (B,T,{x_dim_i * x_dim_i}) or "
+            f"(B,T,{x_dim_i},{x_dim_i}); got {cov.shape}"
         )
-    elif callable(phi):
-        weights = jnp.asarray([float(phi(k)) for k in level_ids], dtype=jnp.float32)
-    else:
-        weights = jnp.asarray(phi, dtype=jnp.float32)
-        if weights.shape[0] != len(level_ids):
+
+    def loss(
+        pred_x: jax.Array,
+        target_x: jax.Array,
+        target_cov: jax.Array | None = None,
+    ) -> jax.Array:
+        pred_x_btc = _ensure_btc(pred_x, "pred_x")
+        target_x_btc = _ensure_btc(target_x, "target_x")
+        if pred_x_btc.shape != target_x_btc.shape:
             raise ValueError(
-                f"`phi` must have length {len(level_ids)} (levels={level_ids}), got {weights.shape[0]}."
+                f"pred_x / target_x shape mismatch: {pred_x_btc.shape} vs {target_x_btc.shape}"
+            )
+        if int(pred_x_btc.shape[2]) != x_dim_i:
+            raise ValueError(
+                f"Expected x_dim={x_dim_i} channels, got {int(pred_x_btc.shape[2])}."
             )
 
-    if bool(jnp.any(weights < 0)):
-        raise ValueError("All level weights phi(k) must be nonnegative.")
+        B, T, _ = pred_x_btc.shape
+        if T < 2 or B < 1:  
+            return jnp.asarray(0.0, dtype=jnp.float32)
 
-    sqrt_weights = jnp.sqrt(weights)
-
-    # Precompute static slices for each level in the flattened signature vector
-    slices: list[tuple[int, int]] = []
-    start = 0
-    for size in level_sizes:
-        end = start + int(size)
-        slices.append((start, end))
-        start = end
-
-    def loss(pred: jax.Array, target: jax.Array) -> jax.Array:
-        assert pred.shape == target.shape, (
-            f"pred and target must have the same shape, got {pred.shape} and {target.shape}"
+        target_cov = (
+            _parse_target_cov(target_cov, B, T) if target_cov is not None else None
         )
-        ts_col: jax.Array | None = None
-        if time_augment:
-            assert int(pred.shape[-1]) == int(value_dim_int), (
-                f"Expected value dimension {int(value_dim_int)}, got {int(pred.shape[-1])}. "
-                "Pass the correct `ambient_dim` when constructing the loss."
-            )
-            length = int(pred.shape[-2])
-            ts = jnp.linspace(0.0, 1.0, length, dtype=pred.dtype)  # (T,)
-            ts_col = ts[:, None]  # (T, 1)
-        else:
-            assert int(pred.shape[-1]) == int(effective_dim), (
-                f"Expected path feature dimension {int(effective_dim)}, got {int(pred.shape[-1])}. "
-                "Pass the correct `ambient_dim` when constructing the loss."
-            )
 
-        def _psi(path: jax.Array) -> jax.Array:
-            if time_augment:
-                assert ts_col is not None
-                if anchor_at_start:
-                    path = path - path[:1]
-                aug = jnp.concatenate([ts_col, path], axis=-1)  # (T, 1+value_dim)
-                if prepend_zero_basepoint:
-                    zero0 = jnp.zeros((1, effective_dim), dtype=aug.dtype)
-                    path = jnp.concatenate([zero0, aug], axis=0)
-                else:
-                    path = aug
+        dt = 1.0 / float(T - 1)
 
-            sig = compute_path_signature(
-                path=path,
-                depth=depth,
-                hopf=hopf,
-                mode="full",
-            )
-            vec = sig.flatten()
-            if int(vec.shape[0]) != total_size:
-                raise ValueError(
-                    f"Unexpected signature feature length {int(vec.shape[0])}; expected {total_size}. "
-                    f"(depth={depth}, ambient_dim={effective_dim}, include_level0={include_level0})"
+        def _path(x: jax.Array) -> jax.Array:
+            path = x
+            if use_time:
+                ts = jnp.linspace(0.0, 1.0, T, dtype=x.dtype)
+                t = jnp.broadcast_to(ts[None, :, None], (B, T, 1))
+                path = jnp.concatenate([t, x], axis=-1)
+            if prepend_zero_basepoint:
+                path = jnp.concatenate(
+                    [jnp.zeros((B, 1, sig_dim), dtype=x.dtype), path],
+                    axis=1,
                 )
+            return path
 
-            parts = []
-            for idx, (a, b) in enumerate(slices):
-                parts.append(sqrt_weights[idx] * vec[a:b])
-            return jnp.concatenate(parts, axis=0)
+        def _correction(x: jax.Array, cov_density: jax.Array | None) -> jax.Array:
+            if cov_density is None:
+                inc = jnp.diff(x, axis=1)
+                dqv = jnp.einsum("btc,btd->btcd", inc, inc)
+            else:
+                dqv = cov_density[:, :-1] * dt
 
-        psi_pred = jax.vmap(_psi)(pred)  # (N, F)
-        psi_target = jax.vmap(_psi)(target)  # (N, F) (same batch size enforced above)
+            corr = jnp.zeros((B, int(dqv.shape[1]), sig_dim, sig_dim), dtype=x.dtype)
+            start = 1 if use_time else 0
+            corr = corr.at[:, :, start:, start:].set(dqv.astype(x.dtype))
+            if prepend_zero_basepoint:
+                corr = jnp.concatenate(
+                    [jnp.zeros((B, 1, sig_dim, sig_dim), dtype=x.dtype), corr],
+                    axis=1,
+                )
+            return corr.reshape((B, int(corr.shape[1]), sig_dim * sig_dim))
 
-        mean_pred = jnp.mean(psi_pred, axis=0)
-        mean_target = jnp.mean(psi_target, axis=0)
+        phi_pred = branched_sig(
+            _path(pred_x_btc),
+            depth_i,
+            planar=use_planar,
+            correction=_correction(pred_x_btc, None) if depth_i >= 2 else None,
+        )
+        phi_target = branched_sig(
+            _path(target_x_btc),
+            depth_i,
+            planar=use_planar,
+            correction=(
+                _correction(target_x_btc, target_cov) if depth_i >= 2 else None
+            ),
+        )
 
-        diff = mean_pred - mean_target
-        return jnp.vdot(diff, diff)
+        # For dot-product kernels, MMD^2 reduces to the squared distance between mean
+        # embeddings — avoids the O(B^2) Gram matrix.
+        diff = jnp.mean(phi_pred, axis=0) - jnp.mean(phi_target, axis=0)
+        return jnp.sum(diff * diff).astype(jnp.float32)
 
     return loss
+
+
+def simple_bergomi_ito_signature_loss(
+    *,
+    num_eval_times: int = 4,
+    projection_block_size: int = 16,
+    eps: float = 1e-6,
+) -> Callable[[jax.Array, jax.Array, jax.Array, jax.Array], jax.Array]:
+    """Joint driver/output Itô loss for simple Bergomi log-prices.
+
+    The loss compares low-order realized Itô features of the generated pair
+    (W, X) with the data pair. It includes the drift-corrected coordinate
+    X_t + 0.5 [X]_t, which should be martingale-like for log-prices solving
+    dX = sigma dW - 0.5 sigma^2 dt.
+    """
+
+    num_eval_times_i = int(num_eval_times)
+    projection_block_size_i = int(projection_block_size)
+    eps_f = float(eps)
+    if num_eval_times_i <= 0:
+        raise ValueError("num_eval_times must be >= 1")
+    if projection_block_size_i <= 0:
+        raise ValueError("projection_block_size must be >= 1")
+
+    def _as_bt(x: jax.Array) -> jax.Array:
+        if x.ndim == 2:
+            return x
+        if x.ndim == 3 and int(x.shape[-1]) >= 1:
+            return x[..., 0]
+        raise ValueError(f"Expected path shaped (B,T) or (B,T,C), got {x.shape}")
+
+    def _driver_bt(x: jax.Array) -> jax.Array:
+        if x.ndim == 2:
+            return x
+        if x.ndim == 3 and int(x.shape[-1]) >= 2:
+            return x[..., 1]
+        if x.ndim == 3 and int(x.shape[-1]) == 1:
+            return x[..., 0]
+        raise ValueError(f"Expected driver shaped (B,T) or (B,T,C), got {x.shape}")
+
+    def _cumulative_features(w: jax.Array, x: jax.Array) -> jax.Array:
+        dW = jnp.diff(w, axis=1)
+        dX = jnp.diff(x, axis=1)
+        qvW = jnp.cumsum(dW * dW, axis=1)
+        qvX = jnp.cumsum(dX * dX, axis=1)
+        covWX = jnp.cumsum(dW * dX, axis=1)
+        w_rel = w[:, 1:] - w[:, :1]
+        x_rel = x[:, 1:] - x[:, :1]
+        ito_mart = x_rel + 0.5 * qvX
+
+        n_steps = int(dW.shape[1])
+        n_eval = min(num_eval_times_i, n_steps)
+        eval_idx = jnp.linspace(0, n_steps - 1, n_eval, dtype=jnp.int32)
+        return jnp.concatenate(
+            [
+                w_rel[:, eval_idx],
+                x_rel[:, eval_idx],
+                qvW[:, eval_idx],
+                qvX[:, eval_idx],
+                covWX[:, eval_idx],
+                ito_mart[:, eval_idx],
+            ],
+            axis=1,
+        )
+
+    def _projection_features(w: jax.Array, x: jax.Array) -> jax.Array:
+        dW = jnp.diff(w, axis=1)
+        dX = jnp.diff(x, axis=1)
+        b = int(dW.shape[0])
+        n_steps = int(dW.shape[1])
+        block = min(projection_block_size_i, n_steps)
+        n_blocks = max(1, n_steps // block)
+        n = n_blocks * block
+        dWb = dW[:, :n].reshape((b, n_blocks, block))
+        dXb = dX[:, :n].reshape((b, n_blocks, block))
+
+        dW_win = jnp.sum(dWb, axis=2)
+        dX_win = jnp.sum(dXb, axis=2)
+        qvW_win = jnp.sum(dWb * dWb, axis=2)
+        qvX_win = jnp.sum(dXb * dXb, axis=2)
+        covWX_win = jnp.sum(dWb * dXb, axis=2)
+        beta = covWX_win / (qvW_win + eps_f)
+        residual = dX_win + 0.5 * qvX_win - beta * dW_win
+        normalized = residual / jnp.sqrt(qvX_win + eps_f)
+        return jnp.stack(
+            [
+                jnp.mean(residual, axis=1),
+                jnp.sqrt(jnp.mean(residual * residual, axis=1)),
+                jnp.sum(residual, axis=1),
+                jnp.mean(jnp.abs(normalized), axis=1),
+                jnp.sqrt(jnp.mean(normalized * normalized, axis=1)),
+            ],
+            axis=1,
+        )
+
+    def _mean_embedding_gap(pred_feat: jax.Array, target_feat: jax.Array) -> jax.Array:
+        scale = jnp.std(target_feat, axis=0) + eps_f
+        diff = jnp.mean(pred_feat / scale, axis=0) - jnp.mean(
+            target_feat / scale, axis=0
+        )
+        return jnp.sum(diff * diff)
+
+    def loss(
+        pred_x: jax.Array,
+        target_x: jax.Array,
+        pred_control: jax.Array,
+        target_driver: jax.Array,
+    ) -> jax.Array:
+        pred_bt = _as_bt(pred_x)
+        target_bt = _as_bt(target_x)
+        pred_w = _driver_bt(pred_control)
+        target_w = _driver_bt(target_driver)
+        if pred_bt.shape != target_bt.shape:
+            raise ValueError(
+                f"pred_x / target_x shape mismatch: {pred_bt.shape} vs {target_bt.shape}"
+            )
+        if pred_w.shape != pred_bt.shape or target_w.shape != target_bt.shape:
+            raise ValueError(
+                "driver and log-price paths must align in (B,T), got "
+                f"pred_w={pred_w.shape}, pred_x={pred_bt.shape}, "
+                f"target_w={target_w.shape}, target_x={target_bt.shape}"
+            )
+        if int(pred_bt.shape[1]) < 2 or int(pred_bt.shape[0]) < 1:
+            return jnp.asarray(0.0, dtype=jnp.float32)
+
+        cumulative_gap = _mean_embedding_gap(
+            _cumulative_features(pred_w, pred_bt),
+            _cumulative_features(target_w, target_bt),
+        )
+        projection_gap = _mean_embedding_gap(
+            _projection_features(pred_w, pred_bt),
+            _projection_features(target_w, target_bt),
+        )
+        return (cumulative_gap + projection_gap).astype(jnp.float32)
+
+    return loss
+
+
+def _maybe_unvech_spd(
+    x: jax.Array,
+) -> jax.Array:
+    if x.ndim >= 2 and x.shape[-2:] == (3, 3):
+        return x
+    if x.shape[-1] == 6:
+        return SPDManifold.unvech(x)
+    return x

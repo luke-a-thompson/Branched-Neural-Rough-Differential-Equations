@@ -1,7 +1,7 @@
 [project]
 name = "taming-the-ito-lyon"
 version = "0.1.0"
-description = "Add your description here"
+description = "Code for the ICML2026 paper Learning Manifold and Itô Dynamics with Branched Neural Rough Differential Equations"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
@@ -15,22 +15,29 @@ dependencies = [
     "scipy>=1.16.0",
     "pydantic>=2.12.3",
     "tqdm>=4.67.1",
-    "mypy>=1.18.2",
-    "filelock>=3.20.2",
     "matplotlib>=3.10.8",
     "optuna>=4.6.0",
     "lovely-jax>=0.1.4",
+    "diffrax-lowstorage",
+    "georax",
+    "pysiglib[cuda]>=3.1.0",
+    "roughrax"
 ]
 
 [tool.uv.sources]
-stochastax = { git = "https://github.com/luke-a-thompson/Stochastax.git", branch = "master" }
-
+stochastax = { git = "https://github.com/luke-a-thompson/Stochastax.git", branch = "ArbitraryDepthBranchedRP" }
 cyreal = { git = "https://github.com/luke-a-thompson/cyreal_dynamics.git", branch = "master" }
+diffrax = { git = "https://github.com/sammccallum/diffrax", rev = "aeb1335b5a6278e85a270231e0f97b8db4453ae6" }
+diffrax-lowstorage = {git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git"}
+georax = {git = "https://github.com/luke-a-thompson/georax.git"}
+roughrax = {git = "https://github.com/luke-a-thompson/roughrax.git"}
 
 [project.scripts]
 train = "taming_the_ito_lyon.training.train_cli:main"
 test = "taming_the_ito_lyon.training.test_cli:main"
 optimize = "taming_the_ito_lyon.training.optimize_cli:main"
+tables = "taming_the_ito_lyon.paper.tables_cli:main"
+shapes = "taming_the_ito_lyon.data.shapes_cli:main"
 
 [build-system]
 requires = ["hatchling"]

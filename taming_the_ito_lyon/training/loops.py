@@ -7,11 +7,15 @@ import optax
 from cyreal.loader import DataLoader, _LoaderState
 from tqdm.auto import tqdm
 
-from taming_the_ito_lyon.config.config_options import TrainingMode
+from taming_the_ito_lyon.config.config_options import Datasets, TrainingMode
 from taming_the_ito_lyon.models import Model
 from taming_the_ito_lyon.training.io import format_loss
 from taming_the_ito_lyon.training.results_gathering_fns import ResultsDict
-from taming_the_ito_lyon.training.runtime import ExperimentRuntime
+from taming_the_ito_lyon.training.runtime import (
+    ExperimentRuntime,
+    align_predictions_to_targets,
+    trim_time_aligned_batch,
+)
 
 
 def run_train_epoch(
@@ -21,7 +25,7 @@ def run_train_epoch(
     epoch_key: jax.Array | None,
     epoch_idx: int,
     train_step: Callable[
-        [jax.Array, jax.Array, Model, optax.OptState],
+        [jax.Array, jax.Array, jax.Array, Model, optax.OptState],
         tuple[jax.Array, Model, optax.OptState],
     ],
     train_loader_state: _LoaderState,
@@ -51,9 +55,16 @@ def run_train_epoch(
         else:
             control_values_b = batch["driver"]
 
-        loss_value, model, opt_state = train_step(
+        control_values_b, target_b, gt_driver_b = trim_time_aligned_batch(
+            runtime,
             control_values_b,
             batch["solution"],
+            batch["driver"],
+        )
+        loss_value, model, opt_state = train_step(
+            control_values_b,
+            target_b,
+            gt_driver_b,
             model,
             opt_state,
         )
@@ -91,9 +102,10 @@ def run_eval_epoch(
     # Keep accumulation on-device to avoid syncing every step.
     total_loss = jnp.asarray(0.0, dtype=jnp.float32)
     tqdm_every = int(runtime.config.experiment_config.tqdm_update_interval)
-    # Only keep a single batch for plotting/diagnostics (avoid O(n_batches) memory).
-    preds0: jax.Array | None = None
-    targets0: jax.Array | None = None
+    # Keep all batches for diagnostics (KS over all eval batches).
+    preds_batches: list[jax.Array] = []
+    targets_batches: list[jax.Array] = []
+    controls_batches: list[jax.Array] = []
 
     pbar = tqdm(
         range(loader.steps_per_epoch),
@@ -110,14 +122,26 @@ def run_eval_epoch(
                 raise ValueError(
                     "epoch_key and unconditional_control_sampler required for UNCONDITIONAL"
                 )
-            step_key = jr.fold_in(jr.fold_in(epoch_key, epoch_idx), step_idx)
+            # Hold eval drivers fixed across epochs by not folding in epoch_idx.
+            step_key = jr.fold_in(epoch_key, step_idx)
             control_values_b = runtime.unconditional_control_sampler(
                 runtime.ts_full, step_key, runtime.batch_size
             )
         else:
             control_values_b = batch["driver"]
 
-        loss_value = runtime.eval_step(control_values_b, batch["solution"], model)
+        control_values_b, target_b, gt_driver_b = trim_time_aligned_batch(
+            runtime,
+            control_values_b,
+            batch["solution"],
+            batch["driver"],
+        )
+        # Single forward pass per batch; reuse preds for loss and metrics.
+        preds = runtime.predict_batch(control_values_b, model)
+        preds = align_predictions_to_targets(runtime, preds, target_b)
+        loss_value = runtime.loss_on_preds_fn(
+            preds, target_b, control_values_b, gt_driver_b
+        )
         total_loss = total_loss + loss_value
 
         if tqdm_every > 0 and (step_idx % tqdm_every == 0):
@@ -130,19 +154,20 @@ def run_eval_epoch(
                 }
             )
 
-        # Save only the first batch for visualization.
-        if step_idx == 0:
-            preds0 = runtime.predict_batch(control_values_b, model)
-            targets0 = batch["solution"]
+        preds_batches.append(preds)
+        targets_batches.append(target_b)
+        controls_batches.append(control_values_b)
 
     steps = max(1, int(loader.steps_per_epoch))
     avg_loss = float(jax.device_get(total_loss)) / float(steps)
 
-    # Compute diagnostics (plots/KS/etc.) using only the first batch.
-    assert preds0 is not None and targets0 is not None
+    # Compute diagnostics (plots/KS/etc.) using all eval batches.
     results_dict = runtime.results_gathering_fn(
-        preds0,
-        targets0,
+        preds_batches,
+        targets_batches,
+        None
+        if runtime.config.experiment_config.dataset_name == Datasets.PPG_DALIA
+        else controls_batches,
         epoch_idx,
         runtime.config.experiment_config.model_type.value,
         n_plot=min(8, int(runtime.batch_size)),

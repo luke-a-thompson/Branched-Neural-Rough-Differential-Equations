@@ -15,7 +15,7 @@ CONFIGS_DIR = Path(__file__).parent.parent / "configs"
 CONFIG_FILES = list(CONFIGS_DIR.glob("*.toml"))
 
 # Models with working factories
-WORKING_MODELS = {"ncde", "log_ncde", "nrde"}
+WORKING_MODELS = {"ncde", "nrde"}
 
 
 def create_dry_run_config(base_config_path: Path, epochs: int = 1) -> str:
