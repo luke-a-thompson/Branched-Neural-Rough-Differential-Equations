@@ -189,7 +189,7 @@ def _bnrde_config(solver: str) -> dict:
             "model_type": "bnrde",
             "dataset_name": "synthetic_gbm",
             "optimizer": "adam",
-            "learning_rate": 1e-3,
+            "learning_rate": 5e-3,
             "loss": "mse",
             "seed": 1,
             "batch_size": 8,

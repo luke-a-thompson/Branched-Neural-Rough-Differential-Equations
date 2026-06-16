@@ -100,6 +100,177 @@ def _ito_level12_feature_vectors(
     return feat.astype(np.float32)
 
 
+def _cumulative_ito_signature_feature_vectors(
+    *,
+    w_paths: np.ndarray,
+    x_paths: np.ndarray,
+    num_eval_times: int = 4,
+) -> np.ndarray:
+    """Compute joint (W, X) Itô features at several cumulative times.
+
+    The final coordinate at each time is X_t + 0.5 [X]_t. For simple Bergomi
+    log-prices this is the drift-corrected Itô martingale coordinate.
+    """
+    if w_paths.ndim != 2 or x_paths.ndim != 2:
+        raise ValueError(
+            f"Expected w_paths/x_paths shaped (B, T), got {w_paths.shape} and {x_paths.shape}"
+        )
+    if w_paths.shape != x_paths.shape:
+        raise ValueError(
+            f"w_paths and x_paths must have the same shape, got {w_paths.shape} and {x_paths.shape}"
+        )
+    b, t = int(w_paths.shape[0]), int(w_paths.shape[1])
+    if t < 2:
+        return np.zeros((b, 0), dtype=np.float32)
+
+    dW = np.diff(w_paths, axis=1)
+    dX = np.diff(x_paths, axis=1)
+    qvW = np.cumsum(dW * dW, axis=1, dtype=np.float64)
+    qvX = np.cumsum(dX * dX, axis=1, dtype=np.float64)
+    covWX = np.cumsum(dW * dX, axis=1, dtype=np.float64)
+    w_rel = w_paths[:, 1:] - w_paths[:, :1]
+    x_rel = x_paths[:, 1:] - x_paths[:, :1]
+    ito_mart = x_rel + 0.5 * qvX
+
+    n_steps = int(dW.shape[1])
+    n_eval = min(max(int(num_eval_times), 1), n_steps)
+    eval_idx = np.unique(np.linspace(0, n_steps - 1, n_eval, dtype=np.int64))
+    blocks = [
+        w_rel[:, eval_idx],
+        x_rel[:, eval_idx],
+        qvW[:, eval_idx],
+        qvX[:, eval_idx],
+        covWX[:, eval_idx],
+        ito_mart[:, eval_idx],
+    ]
+    return np.concatenate(blocks, axis=1).astype(np.float32)
+
+
+def _ito_log_martingale_mean_l2(
+    *,
+    x_paths: np.ndarray,
+    num_eval_times: int = 16,
+) -> float:
+    """L2 size of E[X_t + 0.5 [X]_t] across evaluation times."""
+    if x_paths.ndim != 2:
+        raise ValueError(f"Expected x_paths shaped (B, T), got {x_paths.shape}")
+    if int(x_paths.shape[1]) < 2:
+        return 0.0
+
+    dX = np.diff(x_paths, axis=1)
+    qvX = np.cumsum(dX * dX, axis=1, dtype=np.float64)
+    x_rel = x_paths[:, 1:] - x_paths[:, :1]
+    ito_mart = x_rel + 0.5 * qvX
+    n_steps = int(dX.shape[1])
+    n_eval = min(max(int(num_eval_times), 1), n_steps)
+    eval_idx = np.unique(np.linspace(0, n_steps - 1, n_eval, dtype=np.int64))
+    mean_curve = np.mean(ito_mart[:, eval_idx], axis=0, dtype=np.float64)
+    return float(np.sqrt(np.mean(mean_curve * mean_curve)))
+
+
+def _ito_driver_output_summary(
+    *,
+    w_paths: np.ndarray,
+    x_paths: np.ndarray,
+) -> dict[str, float]:
+    """Interpretable realized Itô statistics for a batch of (W, X) paths."""
+    if w_paths.ndim != 2 or x_paths.ndim != 2:
+        raise ValueError(
+            f"Expected w_paths/x_paths shaped (B, T), got {w_paths.shape} and {x_paths.shape}"
+        )
+    if w_paths.shape != x_paths.shape:
+        raise ValueError(
+            f"w_paths and x_paths must have the same shape, got {w_paths.shape} and {x_paths.shape}"
+        )
+    if int(w_paths.shape[1]) < 2:
+        return {
+            "qv_w_mean": 0.0,
+            "qv_x_mean": 0.0,
+            "cov_wx_mean": 0.0,
+            "beta_mean": 0.0,
+            "driver_corr": 0.0,
+        }
+
+    dW = np.diff(w_paths, axis=1)
+    dX = np.diff(x_paths, axis=1)
+    qv_w = np.sum(dW * dW, axis=1, dtype=np.float64)
+    qv_x = np.sum(dX * dX, axis=1, dtype=np.float64)
+    cov_wx = np.sum(dW * dX, axis=1, dtype=np.float64)
+    beta = cov_wx / (qv_w + 1e-12)
+    dW_flat = dW.reshape(-1).astype(np.float64, copy=False)
+    dX_flat = dX.reshape(-1).astype(np.float64, copy=False)
+    if float(np.std(dW_flat)) <= 0.0 or float(np.std(dX_flat)) <= 0.0:
+        corr = 0.0
+    else:
+        corr = float(np.corrcoef(dW_flat, dX_flat)[0, 1])
+
+    return {
+        "qv_w_mean": float(np.mean(qv_w)),
+        "qv_x_mean": float(np.mean(qv_x)),
+        "cov_wx_mean": float(np.mean(cov_wx)),
+        "beta_mean": float(np.mean(beta)),
+        "driver_corr": corr,
+    }
+
+
+def _local_ito_projection_feature_vectors(
+    *,
+    w_paths: np.ndarray,
+    x_paths: np.ndarray,
+    block_size: int = 16,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    """Local drift-corrected residual after projecting onto the Brownian driver.
+
+    For each block, fit the local Itô integrand through realized covariation,
+    beta = Δ[X,W] / Δ[W], and record the residual of
+    ΔX + 0.5 Δ[X] ≈ beta ΔW.
+    """
+    if w_paths.ndim != 2 or x_paths.ndim != 2:
+        raise ValueError(
+            f"Expected w_paths/x_paths shaped (B, T), got {w_paths.shape} and {x_paths.shape}"
+        )
+    if w_paths.shape != x_paths.shape:
+        raise ValueError(
+            f"w_paths and x_paths must have the same shape, got {w_paths.shape} and {x_paths.shape}"
+        )
+    b, t = int(w_paths.shape[0]), int(w_paths.shape[1])
+    if t < 2:
+        return np.zeros((b, 5), dtype=np.float32)
+
+    dW = np.diff(w_paths, axis=1)
+    dX = np.diff(x_paths, axis=1)
+    block = max(int(block_size), 1)
+    n_blocks = int(dW.shape[1]) // block
+    if n_blocks < 1:
+        block = int(dW.shape[1])
+        n_blocks = 1
+    n = n_blocks * block
+    dWb = dW[:, :n].reshape(b, n_blocks, block)
+    dXb = dX[:, :n].reshape(b, n_blocks, block)
+
+    dW_win = np.sum(dWb, axis=2, dtype=np.float64)
+    dX_win = np.sum(dXb, axis=2, dtype=np.float64)
+    qvW_win = np.sum(dWb * dWb, axis=2, dtype=np.float64)
+    qvX_win = np.sum(dXb * dXb, axis=2, dtype=np.float64)
+    covWX_win = np.sum(dWb * dXb, axis=2, dtype=np.float64)
+    beta = covWX_win / (qvW_win + float(eps))
+    residual = dX_win + 0.5 * qvX_win - beta * dW_win
+    normalized = residual / np.sqrt(qvX_win + float(eps))
+
+    feat = np.stack(
+        [
+            np.mean(residual, axis=1, dtype=np.float64),
+            np.sqrt(np.mean(residual * residual, axis=1, dtype=np.float64)),
+            np.sum(residual, axis=1, dtype=np.float64),
+            np.mean(np.abs(normalized), axis=1, dtype=np.float64),
+            np.sqrt(np.mean(normalized * normalized, axis=1, dtype=np.float64)),
+        ],
+        axis=1,
+    )
+    return feat.astype(np.float32)
+
+
 def _mmd_rbf_median_heuristic(
     x: np.ndarray,
     y: np.ndarray,
@@ -488,8 +659,62 @@ def get_rough_volatility_results(
             x_paths=x_gt[:n, :t_len],
             include_level1=True,
         )
+        joint_feat_model = _cumulative_ito_signature_feature_vectors(
+            w_paths=w_model[:n, :t_len],
+            x_paths=x_model[:n, :t_len],
+            num_eval_times=4,
+        )
+        joint_feat_gt = _cumulative_ito_signature_feature_vectors(
+            w_paths=w_gt[:n, :t_len],
+            x_paths=x_gt[:n, :t_len],
+            num_eval_times=4,
+        )
+        projection_feat_model = _local_ito_projection_feature_vectors(
+            w_paths=w_model[:n, :t_len],
+            x_paths=x_model[:n, :t_len],
+            block_size=16,
+        )
+        projection_feat_gt = _local_ito_projection_feature_vectors(
+            w_paths=w_gt[:n, :t_len],
+            x_paths=x_gt[:n, :t_len],
+            block_size=16,
+        )
+        mart_model = _ito_log_martingale_mean_l2(x_paths=x_model[:n, :t_len])
+        mart_gt = _ito_log_martingale_mean_l2(x_paths=x_gt[:n, :t_len])
+        ito_summary_model = _ito_driver_output_summary(
+            w_paths=w_model[:n, :t_len],
+            x_paths=x_model[:n, :t_len],
+        )
+        ito_summary_gt = _ito_driver_output_summary(
+            w_paths=w_gt[:n, :t_len],
+            x_paths=x_gt[:n, :t_len],
+        )
         extra_scalar_metrics = {
-            "ito_level2_mmd2": _mmd_rbf_median_heuristic(feat_model, feat_gt)
+            "ito_level2_mmd2": _mmd_rbf_median_heuristic(feat_model, feat_gt),
+            "ito_joint_signature_mmd2": _mmd_rbf_median_heuristic(
+                joint_feat_model, joint_feat_gt
+            ),
+            "ito_log_martingale_mean_l2": mart_model,
+            "ito_log_martingale_mean_gap_l2": abs(mart_model - mart_gt),
+            "ito_local_projection_mmd2": _mmd_rbf_median_heuristic(
+                projection_feat_model, projection_feat_gt
+            ),
+            "ito_qv_x_mean": ito_summary_model["qv_x_mean"],
+            "ito_qv_x_mean_gap_abs": abs(
+                ito_summary_model["qv_x_mean"] - ito_summary_gt["qv_x_mean"]
+            ),
+            "ito_cov_wx_mean": ito_summary_model["cov_wx_mean"],
+            "ito_cov_wx_mean_gap_abs": abs(
+                ito_summary_model["cov_wx_mean"] - ito_summary_gt["cov_wx_mean"]
+            ),
+            "ito_beta_mean": ito_summary_model["beta_mean"],
+            "ito_beta_mean_gap_abs": abs(
+                ito_summary_model["beta_mean"] - ito_summary_gt["beta_mean"]
+            ),
+            "ito_driver_corr": ito_summary_model["driver_corr"],
+            "ito_driver_corr_gap_abs": abs(
+                ito_summary_model["driver_corr"] - ito_summary_gt["driver_corr"]
+            ),
         }
     else:
         pred_price0 = _extract_first_channel_paths(preds_batches[0])

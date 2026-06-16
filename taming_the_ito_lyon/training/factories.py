@@ -4,6 +4,7 @@ from collections.abc import Callable
 import diffrax
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import optax
 from cyreal.loader import DataLoader
 from cyreal.transforms import BatchTransform
@@ -12,9 +13,9 @@ from stochastax.manifolds import SO3, EuclideanSpace, Manifold
 from stochastax.manifolds.spd import SPDManifold
 
 from taming_the_ito_lyon.config import (
+    BNRDEConfig,
     Config,
     Datasets,
-    BNRDEConfig,
     GRUConfig,
     LSTMConfig,
     MODEConfig,
@@ -257,6 +258,7 @@ def create_model(
                 hidden_state_mode=config.experiment_config.hidden_state_mode,
                 rough_solution=config.nn_config.rough_solution,
                 solver=solver,
+                stepsize_controller=stepsize_controller,
                 adjoint=adjoint,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
@@ -380,26 +382,12 @@ def create_dataloaders(
     config: Config,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     match config.experiment_config.dataset_name:
-        case (
-            Datasets.BLACK_SCHOLES
-            | Datasets.BERGOMI
-            | Datasets.ROUGH_BERGOMI
-            | Datasets.SIMPLE_RBERGOMI
-        ):
-            from taming_the_ito_lyon.data.rough_volatility import RoughVolatilityDataset
+        case Datasets.SIMPLE_RBERGOMI:
             from taming_the_ito_lyon.data.simple_rough_volatility import (
                 SimpleRoughVolatilityDataset,
             )
 
-            dataset_cls: (
-                type[RoughVolatilityDataset] | type[SimpleRoughVolatilityDataset]
-            )
-            if config.experiment_config.dataset_name == Datasets.SIMPLE_RBERGOMI:
-                dataset_cls = SimpleRoughVolatilityDataset
-            else:
-                dataset_cls = RoughVolatilityDataset
-
-            train, val, test = _splits(dataset_cls, config, disk=False)
+            train, val, test = _splits(SimpleRoughVolatilityDataset, config, disk=False)
         case Datasets.SYNTHETIC_GBM:
             from taming_the_ito_lyon.data.synthetic_gbm import SyntheticGBMDataset
 
@@ -570,6 +558,48 @@ def create_unconditional_control_sampler_batched(
     return jax.jit(sample_batch, static_argnames=("batch_size",))
 
 
+def _first_driver_channel(driver_source: jax.Array, *, name: str) -> jax.Array:
+    if driver_source.ndim == 2:
+        return driver_source[..., None]
+    if driver_source.ndim == 3 and int(driver_source.shape[-1]) >= 2:
+        # Unconditional controls are time-augmented as (t, W).
+        return driver_source[..., 1:2]
+    if driver_source.ndim == 3 and int(driver_source.shape[-1]) == 1:
+        return driver_source
+    raise ValueError(
+        f"Expected {name} shaped (B,T), (B,T,1), or time-augmented (B,T,2+); "
+        f"got {driver_source.shape}."
+    )
+
+
+def _single_output_channel(output_path: jax.Array, *, name: str) -> jax.Array:
+    if output_path.ndim == 2:
+        return output_path[..., None]
+    if output_path.ndim == 3 and int(output_path.shape[-1]) == 1:
+        return output_path
+    raise ValueError(
+        f"Expected {name} shaped (B,T) or (B,T,1); got {output_path.shape}."
+    )
+
+
+def _simple_bergomi_joint_driver_output_path(
+    *,
+    driver_source: jax.Array,
+    output_path: jax.Array,
+    driver_name: str,
+    output_name: str,
+) -> jax.Array:
+    """Build the joint value path (W, X) used by the simple-Bergomi branched loss."""
+    driver = _first_driver_channel(driver_source, name=driver_name)
+    output = _single_output_channel(output_path, name=output_name)
+    if driver.shape[:2] != output.shape[:2]:
+        raise ValueError(
+            f"{driver_name} and {output_name} must align in batch/time, got "
+            f"{driver.shape} and {output.shape}."
+        )
+    return jnp.concatenate([driver, output], axis=-1)
+
+
 def create_grad_batch_loss_fns(
     config: Config,
     *,
@@ -598,6 +628,9 @@ def create_grad_batch_loss_fns(
 
     loss_fn: Callable[[jax.Array, jax.Array], jax.Array] | None = None
     base_branched_loss_fn: Callable[..., jax.Array] | None = None
+    use_simple_bergomi_joint_path = (
+        config.experiment_config.dataset_name == Datasets.SIMPLE_RBERGOMI
+    )
 
     match config.experiment_config.loss:
         case LossType.MSE:
@@ -619,8 +652,11 @@ def create_grad_batch_loss_fns(
             # matters (e.g. matching initial level "h0"/v0), then we must explicitly
             # encode it. We do that via a zero-basepoint prepend, which makes x0 an
             # increment and therefore visible to signature features.
+            sigker_value_dim = (
+                2 if use_simple_bergomi_joint_path else int(output_path_dim)
+            )
             loss_fn = signature_kernel_score(
-                value_dim=int(output_path_dim),
+                value_dim=int(sigker_value_dim),
                 anchor_at_start=False,
                 prepend_zero_basepoint=True,
             )
@@ -630,6 +666,9 @@ def create_grad_batch_loss_fns(
                     "output_path_dim must be provided when loss_type is SIGKER_BRANCHED so the "
                     "Hopf algebra can be constructed outside of jit."
                 )
+            branched_x_dim = (
+                2 if use_simple_bergomi_joint_path else int(output_path_dim)
+            )
             base_branched_loss_fn = branched_signature_kernel_score(
                 # Keep pySigLib CUDA branched forward/backward inside kernel limits.
                 # SPD + time augmentation has dim=7; depth=3 fits the tree-count
@@ -637,7 +676,7 @@ def create_grad_batch_loss_fns(
                 depth=3,
                 use_planar=False,
                 use_time=True,
-                x_dim=int(output_path_dim),
+                x_dim=int(branched_x_dim),
                 prepend_zero_basepoint=True,
             )
         case _:
@@ -667,6 +706,20 @@ def create_grad_batch_loss_fns(
             )
         if config.experiment_config.loss == LossType.SIGKER_BRANCHED:
             assert base_branched_loss_fn is not None
+            if use_simple_bergomi_joint_path:
+                pred_joint = _simple_bergomi_joint_driver_output_path(
+                    driver_source=control_values_b,
+                    output_path=preds,
+                    driver_name="control_values_b",
+                    output_name="preds",
+                )
+                target_joint = _simple_bergomi_joint_driver_output_path(
+                    driver_source=gt_driver_b,
+                    output_path=target_b,
+                    driver_name="gt_driver_b",
+                    output_name="target_b",
+                )
+                return base_branched_loss_fn(pred_joint, target_joint)
             target_cov = (
                 gt_driver_b
                 if config.experiment_config.dataset_name
@@ -674,6 +727,24 @@ def create_grad_batch_loss_fns(
                 else None
             )
             return base_branched_loss_fn(preds, target_b, target_cov=target_cov)
+        if (
+            config.experiment_config.loss == LossType.SIGKER
+            and use_simple_bergomi_joint_path
+        ):
+            assert loss_fn is not None
+            pred_joint = _simple_bergomi_joint_driver_output_path(
+                driver_source=control_values_b,
+                output_path=preds,
+                driver_name="control_values_b",
+                output_name="preds",
+            )
+            target_joint = _simple_bergomi_joint_driver_output_path(
+                driver_source=gt_driver_b,
+                output_path=target_b,
+                driver_name="gt_driver_b",
+                output_name="target_b",
+            )
+            return loss_fn(pred_joint, target_joint)
         if use_spd:
             preds = _maybe_unvech_spd(preds)
             target_b = _maybe_unvech_spd(target_b)

@@ -6,7 +6,7 @@ extrapolation_scheme = "hermite"
 n_recon = 12
 
 optimizer = "adamw"
-learning_rate = 1e-4
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 

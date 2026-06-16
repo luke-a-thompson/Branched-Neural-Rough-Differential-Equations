@@ -11,12 +11,12 @@ max_grad_norm = 1.0
 # Training
 loss = "sigker"
 seed = 1
-batch_size = 64
+batch_size = 512
 epochs = 100
-early_stopping_patience = 25
 
 # Training mode
 training_mode = "unconditional"
+# Unconditional generation samples a Brownian motion with this many channels.
 
 manifold = "euclidean"
 hidden_state_mode = "euclidean"
@@ -24,17 +24,19 @@ evolving_out = true
 
 [solver_config]
 stepsize_controller = "pid"
-solver = "heun"
+solver = "tsit5"
 rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
+# GRU model parameters
 [stacked_xlstm_config]
 d_model = 32
 num_heads = 4
-num_layers = 4
+num_layers = 2
 d_conv = 4
 xlstm_expand = 2
 ffn_expand = 2
 use_ffn = true
-out_size = 1
+out_size = 6
+

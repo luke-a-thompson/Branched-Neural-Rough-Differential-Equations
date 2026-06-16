@@ -6,6 +6,7 @@ from typing import TypeVar
 
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 import jax.random as jr
 import numpy as np
 import optax
@@ -37,6 +38,44 @@ from taming_the_ito_lyon.training.runtime import (
 SAVED_MODELS_DIR = "saved_models"
 
 T = TypeVar("T")
+
+
+def _zero_trainable_leaves(tree: T) -> T:
+    return jax.tree_util.tree_map(
+        lambda x: jnp.zeros_like(x) if eqx.is_array(x) else x,
+        tree,
+    )
+
+
+def _mask_updates_for_trainable_subtree(updates: T) -> T:
+    mode = os.environ.get("TIL_TRAINABLE_SUBTREE", "").strip().lower()
+    if not mode:
+        return updates
+    if mode == "vector_field":
+        return eqx.tree_at(
+            lambda u: (u.initial_cond_mlp, u.readout_layer),
+            updates,
+            replace=(
+                _zero_trainable_leaves(updates.initial_cond_mlp),
+                _zero_trainable_leaves(updates.readout_layer),
+            ),
+        )
+    if mode == "dynamics":
+        return eqx.tree_at(
+            lambda u: u.readout_layer,
+            updates,
+            replace=_zero_trainable_leaves(updates.readout_layer),
+        )
+    if mode == "readout":
+        return eqx.tree_at(
+            lambda u: (u.initial_cond_mlp, u.vector_field),
+            updates,
+            replace=(
+                _zero_trainable_leaves(updates.initial_cond_mlp),
+                _zero_trainable_leaves(updates.vector_field),
+            ),
+        )
+    raise ValueError(f"Unknown TIL_TRAINABLE_SUBTREE={mode!r}")
 
 
 def _eval_metric_name(config: Config, loss_label: str) -> str:
@@ -88,6 +127,10 @@ def experiment(
         output_path_dim=runtime.output_head_dim,
         key=model_key,
     )
+    init_checkpoint = os.environ.get("TIL_INIT_CHECKPOINT")
+    if init_checkpoint:
+        model = eqx.tree_deserialise_leaves(init_checkpoint, model)
+        tqdm.write(f"Loaded initial checkpoint from {init_checkpoint}.")
 
     trainable_leaves = jax.tree_util.tree_leaves(
         eqx.filter(model, eqx.is_inexact_array)
@@ -122,6 +165,7 @@ def experiment(
         )
         params = eqx.filter(model, eqx.is_inexact_array)
         updates, new_opt_state = optim.update(grads, opt_state, params)
+        updates = _mask_updates_for_trainable_subtree(updates)
         updated_model: Model = eqx.apply_updates(model, updates)
         return loss_value, updated_model, new_opt_state
 
@@ -156,6 +200,20 @@ def experiment(
     time_to_best_epoch: float | None = None
     epochs_since_improve = 0
     patience = int(config.experiment_config.early_stopping_patience)
+    checkpoint_on_val_loss = os.environ.get("TIL_CHECKPOINT_ON_VAL_LOSS", "0") == "1"
+    checkpoint_qv_under_ks = (
+        os.environ.get("TIL_CHECKPOINT_QV_UNDER_KS", "0") == "1"
+    )
+    checkpoint_qv_key = os.environ.get(
+        "TIL_CHECKPOINT_QV_KEY", "ito_qv_x_mean_gap_abs"
+    )
+    checkpoint_ks_max = float(os.environ.get("TIL_CHECKPOINT_KS_MAX", "inf"))
+    if checkpoint_qv_under_ks:
+        checkpoint_metric_label = f"{checkpoint_qv_key}@metric<={checkpoint_ks_max:g}"
+    elif checkpoint_on_val_loss:
+        checkpoint_metric_label = runtime.loss_label
+    else:
+        checkpoint_metric_label = "metric"
 
     epochs = int(config.experiment_config.epochs)
     final_epoch = 0
@@ -249,9 +307,21 @@ def experiment(
         )
         val_loss_history.append(float(val_loss))
         val_metric_history.append(float(eval_metric))
+        if checkpoint_qv_under_ks:
+            extra_metrics = val_results_dict.extra_scalar_metrics or {}
+            qv_metric = extra_metrics.get(checkpoint_qv_key)
+            checkpoint_metric = (
+                float(qv_metric)
+                if qv_metric is not None and float(eval_metric) <= checkpoint_ks_max
+                else float("inf")
+            )
+        elif checkpoint_on_val_loss:
+            checkpoint_metric = val_loss
+        else:
+            checkpoint_metric = eval_metric
 
-        if eval_metric < min_val_metric:
-            min_val_metric = eval_metric
+        if checkpoint_metric < min_val_metric:
+            min_val_metric = checkpoint_metric
             best_epoch = epoch_idx
             time_to_best_epoch = time.perf_counter() - training_start
             eqx.tree_serialise_leaves(temp_best_path, model)
@@ -267,6 +337,7 @@ def experiment(
                 f"best_val_{runtime.loss_label}": (
                     f"{format_loss(runtime.loss_label, min_val_metric)} at epoch {best_epoch}"
                 ),
+                "checkpoint_by": checkpoint_metric_label,
                 "val_metric": format_loss(runtime.loss_label, eval_metric),
             }
         )

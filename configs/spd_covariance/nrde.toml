@@ -4,7 +4,7 @@ dataset_name = "spd_wishart_diffusion"
 
 # Optimizer
 optimizer = "muon"
-learning_rate = 5e-4
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 

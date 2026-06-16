@@ -4,12 +4,12 @@ dataset_name = "simple_rbergomi"
 
 # Optimizer
 optimizer = "adamw"
-learning_rate = 3e-4
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 
 # Training
-loss = "sigker_branched"
+loss = "sigker"
 seed = 1
 batch_size = 1024
 epochs = 100

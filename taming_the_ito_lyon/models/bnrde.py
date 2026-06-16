@@ -1,4 +1,5 @@
 import math
+import os
 from collections.abc import Callable
 from typing import Literal
 
@@ -16,7 +17,7 @@ from stochastax.manifolds.spd import SPDManifold
 from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolution
 
 from .extrapolation import ExtrapolationScheme
-from .rough_utils import compute_disjoint_signature_times
+from .rough_utils import ItoCorrectedSignatureInterpolation, compute_disjoint_signature_times
 
 
 def lipswish(x: jax.Array) -> jax.Array:
@@ -106,6 +107,7 @@ class BNRDE(eqx.Module):
     n_recon: int | None = eqx.field(static=True)
 
     solver: diffrax.AbstractSolver = eqx.field(static=True)
+    stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
     adjoint: diffrax.AbstractAdjoint = eqx.field(static=True)
 
     def __init__(
@@ -125,6 +127,7 @@ class BNRDE(eqx.Module):
         hidden_state_mode: HiddenStateMode,
         rough_solution: RoughSolution | Literal["ito", "stratonovich"],
         solver: diffrax.AbstractSolver,
+        stepsize_controller: diffrax.AbstractStepSizeController | None = None,
         adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         evolving_out: bool = True,
@@ -198,10 +201,18 @@ class BNRDE(eqx.Module):
         self.signature_depth = int(signature_depth)
         self.signature_window_size = int(signature_window_size)
         self.evolving_out = evolving_out
-        self.prepend_zero_basepoint = prepend_zero_basepoint
+        self.prepend_zero_basepoint = (
+            prepend_zero_basepoint
+            and os.environ.get("TIL_BNRDE_PREPEND_ZERO_BASEPOINT", "1") != "0"
+        )
         self.extrapolation_scheme = extrapolation_scheme
         self.n_recon = n_recon
         self.solver = solver
+        self.stepsize_controller = (
+            stepsize_controller
+            if stepsize_controller is not None
+            else diffrax.ConstantStepSize()
+        )
         self.adjoint = adjoint
 
     def _maybe_prepend_zero_basepoint(
@@ -281,17 +292,33 @@ class BNRDE(eqx.Module):
         signature_ts = compute_disjoint_signature_times(
             ts, int(self.signature_window_size)
         )
-        control = roughrax.SignatureInterpolation(
-            driver,
-            signature_ts,
-            depth=int(self.signature_depth),
-            solution=self.rough_solution,
-        )
+        if (
+            self.rough_solution == "ito"
+            and os.environ.get("TIL_BNRDE_ITO_CORRECTION", "0") == "1"
+        ):
+            control = ItoCorrectedSignatureInterpolation(
+                driver,
+                signature_ts,
+                depth=int(self.signature_depth),
+            )
+        else:
+            control = roughrax.SignatureInterpolation(
+                driver,
+                signature_ts,
+                depth=int(self.signature_depth),
+                solution=self.rough_solution,
+            )
 
         def vector_field(y: jax.Array) -> jax.Array:
             return self.vector_field(y)
 
         term = roughrax.RoughTerm(vector_field, control, self.geometry)
+        if (
+            os.environ.get("TIL_BNRDE_LEGACY_PIECEWISE", "0") == "1"
+            and isinstance(self.geometry, georax.Euclidean)
+        ):
+            return self._solve_piecewise_logode(ts, signature_ts, term, y0)
+
         solution = diffrax.diffeqsolve(
             term,
             roughrax.LogODE(self.solver),
@@ -306,6 +333,79 @@ class BNRDE(eqx.Module):
         )
         assert solution.ys is not None
         return solution.ys, solution.stats
+
+    def _solve_piecewise_logode(
+        self,
+        ts: jax.Array,
+        signature_ts: jax.Array,
+        term: roughrax.RoughTerm,
+        y0: jax.Array,
+    ) -> tuple[jax.Array, dict[str, jax.Array]]:
+        """Legacy MNRDE-style integration of the frozen log-ODE per window."""
+        assert term.control.coeffs is not None
+        step = int(self.signature_window_size)
+        num_windows = int(term.control.coeffs.shape[0])
+        state_shape = tuple(int(i) for i in jnp.shape(y0))
+        outputs = jnp.zeros(
+            (num_windows, step + 1, *state_shape),
+            dtype=y0.dtype,
+        )
+        step_counts = jnp.zeros((num_windows,), dtype=jnp.int32)
+
+        def body(
+            i: jax.Array,
+            carry: tuple[jax.Array, jax.Array, jax.Array],
+        ) -> tuple[jax.Array, jax.Array, jax.Array]:
+            y, out, counts = carry
+            start_index = i * step
+            ts_window = jax.lax.dynamic_slice(ts, (start_index,), (step + 1,))
+            t0 = ts_window[0]
+            t1 = ts_window[-1]
+            dzdt = term.control.coeffs[i] / (t1 - t0)
+
+            def ode_func(
+                t: jax.typing.ArrayLike,
+                y: jax.Array,
+                args: None,
+            ) -> jax.Array:
+                del args
+                vf = term.vf(t, y, None)
+                return jnp.tensordot(dzdt, vf, axes=1)
+
+            solution = diffrax.diffeqsolve(
+                diffrax.ODETerm(ode_func),
+                self.solver,
+                t0=t0,
+                t1=t1,
+                dt0=0.01
+                if isinstance(self.stepsize_controller, diffrax.ConstantStepSize)
+                else None,
+                y0=y,
+                stepsize_controller=self.stepsize_controller,
+                saveat=diffrax.SaveAt(ts=ts_window),
+                adjoint=self.adjoint,
+                max_steps=9999,
+            )
+            assert solution.ys is not None
+            out = out.at[i].set(solution.ys)
+            counts = counts.at[i].set(solution.stats["num_steps"])
+            return solution.ys[-1], out, counts
+
+        _, outputs, step_counts = jax.lax.fori_loop(
+            0,
+            num_windows,
+            body,
+            (y0, outputs, step_counts),
+        )
+        first = outputs[0]
+        if num_windows == 1:
+            ys = first
+        else:
+            rest = outputs[1:, 1:, ...].reshape(
+                ((num_windows - 1) * step, *state_shape)
+            )
+            ys = jnp.concatenate([first, rest], axis=0)
+        return ys, {"num_steps": jnp.sum(step_counts)}
 
     def _prepare_control(
         self,

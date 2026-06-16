@@ -3,7 +3,7 @@ model_type = "m_ode"
 dataset_name = "sg_so3_simulation"
 
 optimizer = "adamw"
-learning_rate = 1e-4
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 

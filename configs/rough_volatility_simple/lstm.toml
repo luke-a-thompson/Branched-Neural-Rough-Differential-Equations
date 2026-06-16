@@ -1,22 +1,22 @@
 [experiment_config]
-model_type = "bnrde"
+model_type = "lstm"
 dataset_name = "simple_rbergomi"
 
 # Optimizer
-optimizer = "adamw"
-learning_rate = 3e-4
+optimizer = "muon"
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 
 # Training
-loss = "sigker_branched"
+loss = "sigker"
 seed = 1
-batch_size = 1024
+batch_size = 512
 epochs = 100
 
 # Training mode
 training_mode = "unconditional"
-# Unconditional generation always uses a single Brownian driver W (time is prepended).
+# Unconditional generation samples a Brownian motion with this many channels.
 
 manifold = "euclidean"
 hidden_state_mode = "euclidean"
@@ -29,18 +29,9 @@ rtol = 1e-3
 atol = 1e-3
 dtmin = 1e-4
 
-[bnrde_config]
-
-# BNRDE model parameters
-hidden_size = 32
+[lstm_config]
+lstm_state_dim = 32
+num_layers = 2
 init_hidden_dim = 32
-vf_hidden_dim = 32
 initial_cond_mlp_depth = 2
-vf_mlp_depth = 2
-out_size = 1
-
-# Log-signature configuration
-signature_depth = 3
-signature_window_size = 16
-
-rough_solution = "ito"
+out_size = 6

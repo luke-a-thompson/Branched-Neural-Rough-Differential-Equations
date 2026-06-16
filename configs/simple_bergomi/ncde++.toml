@@ -1,18 +1,19 @@
 [experiment_config]
 model_type = "ncde"
-dataset_name = "rough_bergomi"
+dataset_name = "simple_rbergomi"
 
 # Optimizer
-optimizer = "adamw"
-learning_rate = 3e-4
+optimizer = "muon"
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 
 # Training
 loss = "sigker"
 seed = 1
-batch_size = 1024
+batch_size = 512
 epochs = 100
+early_stopping_patience = 25
 
 # Training mode
 training_mode = "unconditional"

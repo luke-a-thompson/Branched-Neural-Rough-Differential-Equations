@@ -286,6 +286,142 @@ def branched_signature_kernel_score(
     return loss
 
 
+def simple_bergomi_ito_signature_loss(
+    *,
+    num_eval_times: int = 4,
+    projection_block_size: int = 16,
+    eps: float = 1e-6,
+) -> Callable[[jax.Array, jax.Array, jax.Array, jax.Array], jax.Array]:
+    """Joint driver/output Itô loss for simple Bergomi log-prices.
+
+    The loss compares low-order realized Itô features of the generated pair
+    (W, X) with the data pair. It includes the drift-corrected coordinate
+    X_t + 0.5 [X]_t, which should be martingale-like for log-prices solving
+    dX = sigma dW - 0.5 sigma^2 dt.
+    """
+
+    num_eval_times_i = int(num_eval_times)
+    projection_block_size_i = int(projection_block_size)
+    eps_f = float(eps)
+    if num_eval_times_i <= 0:
+        raise ValueError("num_eval_times must be >= 1")
+    if projection_block_size_i <= 0:
+        raise ValueError("projection_block_size must be >= 1")
+
+    def _as_bt(x: jax.Array) -> jax.Array:
+        if x.ndim == 2:
+            return x
+        if x.ndim == 3 and int(x.shape[-1]) >= 1:
+            return x[..., 0]
+        raise ValueError(f"Expected path shaped (B,T) or (B,T,C), got {x.shape}")
+
+    def _driver_bt(x: jax.Array) -> jax.Array:
+        if x.ndim == 2:
+            return x
+        if x.ndim == 3 and int(x.shape[-1]) >= 2:
+            return x[..., 1]
+        if x.ndim == 3 and int(x.shape[-1]) == 1:
+            return x[..., 0]
+        raise ValueError(f"Expected driver shaped (B,T) or (B,T,C), got {x.shape}")
+
+    def _cumulative_features(w: jax.Array, x: jax.Array) -> jax.Array:
+        dW = jnp.diff(w, axis=1)
+        dX = jnp.diff(x, axis=1)
+        qvW = jnp.cumsum(dW * dW, axis=1)
+        qvX = jnp.cumsum(dX * dX, axis=1)
+        covWX = jnp.cumsum(dW * dX, axis=1)
+        w_rel = w[:, 1:] - w[:, :1]
+        x_rel = x[:, 1:] - x[:, :1]
+        ito_mart = x_rel + 0.5 * qvX
+
+        n_steps = int(dW.shape[1])
+        n_eval = min(num_eval_times_i, n_steps)
+        eval_idx = jnp.linspace(0, n_steps - 1, n_eval, dtype=jnp.int32)
+        return jnp.concatenate(
+            [
+                w_rel[:, eval_idx],
+                x_rel[:, eval_idx],
+                qvW[:, eval_idx],
+                qvX[:, eval_idx],
+                covWX[:, eval_idx],
+                ito_mart[:, eval_idx],
+            ],
+            axis=1,
+        )
+
+    def _projection_features(w: jax.Array, x: jax.Array) -> jax.Array:
+        dW = jnp.diff(w, axis=1)
+        dX = jnp.diff(x, axis=1)
+        b = int(dW.shape[0])
+        n_steps = int(dW.shape[1])
+        block = min(projection_block_size_i, n_steps)
+        n_blocks = max(1, n_steps // block)
+        n = n_blocks * block
+        dWb = dW[:, :n].reshape((b, n_blocks, block))
+        dXb = dX[:, :n].reshape((b, n_blocks, block))
+
+        dW_win = jnp.sum(dWb, axis=2)
+        dX_win = jnp.sum(dXb, axis=2)
+        qvW_win = jnp.sum(dWb * dWb, axis=2)
+        qvX_win = jnp.sum(dXb * dXb, axis=2)
+        covWX_win = jnp.sum(dWb * dXb, axis=2)
+        beta = covWX_win / (qvW_win + eps_f)
+        residual = dX_win + 0.5 * qvX_win - beta * dW_win
+        normalized = residual / jnp.sqrt(qvX_win + eps_f)
+        return jnp.stack(
+            [
+                jnp.mean(residual, axis=1),
+                jnp.sqrt(jnp.mean(residual * residual, axis=1)),
+                jnp.sum(residual, axis=1),
+                jnp.mean(jnp.abs(normalized), axis=1),
+                jnp.sqrt(jnp.mean(normalized * normalized, axis=1)),
+            ],
+            axis=1,
+        )
+
+    def _mean_embedding_gap(pred_feat: jax.Array, target_feat: jax.Array) -> jax.Array:
+        scale = jnp.std(target_feat, axis=0) + eps_f
+        diff = jnp.mean(pred_feat / scale, axis=0) - jnp.mean(
+            target_feat / scale, axis=0
+        )
+        return jnp.sum(diff * diff)
+
+    def loss(
+        pred_x: jax.Array,
+        target_x: jax.Array,
+        pred_control: jax.Array,
+        target_driver: jax.Array,
+    ) -> jax.Array:
+        pred_bt = _as_bt(pred_x)
+        target_bt = _as_bt(target_x)
+        pred_w = _driver_bt(pred_control)
+        target_w = _driver_bt(target_driver)
+        if pred_bt.shape != target_bt.shape:
+            raise ValueError(
+                f"pred_x / target_x shape mismatch: {pred_bt.shape} vs {target_bt.shape}"
+            )
+        if pred_w.shape != pred_bt.shape or target_w.shape != target_bt.shape:
+            raise ValueError(
+                "driver and log-price paths must align in (B,T), got "
+                f"pred_w={pred_w.shape}, pred_x={pred_bt.shape}, "
+                f"target_w={target_w.shape}, target_x={target_bt.shape}"
+            )
+        if int(pred_bt.shape[1]) < 2 or int(pred_bt.shape[0]) < 1:
+            return jnp.asarray(0.0, dtype=jnp.float32)
+
+        cumulative_gap = _mean_embedding_gap(
+            _cumulative_features(pred_w, pred_bt),
+            _cumulative_features(target_w, target_bt),
+        )
+        projection_gap = _mean_embedding_gap(
+            _projection_features(pred_w, pred_bt),
+            _projection_features(target_w, target_bt),
+        )
+        return (cumulative_gap + projection_gap).astype(jnp.float32)
+
+    return loss
+
+
 def _maybe_unvech_spd(
     x: jax.Array,
 ) -> jax.Array:

@@ -106,6 +106,8 @@ def save_rough_volatility_fan_plot(
     p_med = np.quantile(preds_bt, 0.5, axis=0)
 
     fig, ax = plt.subplots(1, 1, figsize=figsize, sharex=True, sharey=True)
+    fig.patch.set_alpha(0.0)
+    ax.set_facecolor("none")
     ax.fill_between(
         time_idx, t_q_low, t_q_high, color=targets_color, alpha=float(alpha_outer)
     )
@@ -139,9 +141,10 @@ def save_rough_volatility_fan_plot(
     base, _ = os.path.splitext(out_file)
     out_dir = os.path.dirname(base) or "."
     os.makedirs(out_dir, exist_ok=True)
-    fig.savefig(f"{base}.pdf")
-    fig.savefig(f"{base}.svg")
-    fig.savefig(f"{base}.png")
+    savefig_kwargs = {"transparent": True, "facecolor": "none", "edgecolor": "none"}
+    fig.savefig(f"{base}.pdf", **savefig_kwargs)
+    fig.savefig(f"{base}.svg", **savefig_kwargs)
+    fig.savefig(f"{base}.png", **savefig_kwargs)
     plt.close(fig)
 
 
@@ -185,6 +188,8 @@ def save_spd_covariance_eigenvalue_trajectory_single_plot(
     mats = 0.5 * (mats + np.swapaxes(mats, -1, -2))
 
     fig, ax = plt.subplots(1, 1, figsize=figsize, sharex=True, sharey=True)
+    fig.patch.set_alpha(0.0)
+    ax.set_facecolor("none")
     colors = ["tab:blue", "tab:orange", "tab:green"]
     labels = [r"$\lambda_1$", r"$\lambda_2$", r"$\lambda_3$"]
     for i in range(n_plot0):
@@ -206,7 +211,7 @@ def save_spd_covariance_eigenvalue_trajectory_single_plot(
     base, _ = os.path.splitext(out_file)
     out_file = f"{base}.pdf"
     os.makedirs(os.path.dirname(out_file) or ".", exist_ok=True)
-    fig.savefig(out_file)
+    fig.savefig(out_file, transparent=True, facecolor="none", edgecolor="none")
     plt.close(fig)
 
 
@@ -237,6 +242,8 @@ def save_spd_covariance_eigenvalue_fan_single_plot(
     eig = np.linalg.eigvalsh(mats)  # (B,T,3)
 
     fig, ax = plt.subplots(1, 1, figsize=figsize, sharex=True, sharey=True)
+    fig.patch.set_alpha(0.0)
+    ax.set_facecolor("none")
     colors = ["tab:blue", "tab:orange", "tab:green"]
     labels = [r"$\lambda_1$", r"$\lambda_2$", r"$\lambda_3$"]
     q_low, q_inner_low, q_inner_high, q_high = quantiles
@@ -281,7 +288,7 @@ def save_spd_covariance_eigenvalue_fan_single_plot(
     base, _ = os.path.splitext(out_file)
     out_file = f"{base}.pdf"
     os.makedirs(os.path.dirname(out_file) or ".", exist_ok=True)
-    fig.savefig(out_file)
+    fig.savefig(out_file, transparent=True, facecolor="none", edgecolor="none")
     plt.close(fig)
 
 

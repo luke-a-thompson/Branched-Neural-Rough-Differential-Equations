@@ -5,7 +5,7 @@ synthetic_gbm_dim = 8
 
 # Optimizer
 optimizer = "adamw"
-learning_rate = 5e-4
+learning_rate = 5e-3
 weight_decay = 0.000001
 max_grad_norm = 1.0
 
