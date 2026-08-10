@@ -2,10 +2,9 @@ import os
 
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
+import georax
 import jax.numpy as jnp
 import jax.random as jr
-
-from stochastax.manifolds import EuclideanSpace
 
 from taming_the_ito_lyon.models import LSTM, StackedXLSTM, XLSTM
 
@@ -17,8 +16,8 @@ def test_lstm_preserves_sequence_shape() -> None:
         output_path_dim=2,
         mlp_hidden_dim=8,
         initial_cond_mlp_depth=2,
-        manifold=EuclideanSpace(),
-        hidden_manifold=EuclideanSpace(),
+        manifold=georax.Euclidean(),
+        hidden_manifold=georax.Euclidean(),
         num_layers=2,
         key=jr.PRNGKey(0),
     )
@@ -35,7 +34,7 @@ def test_xlstm_parallel_matches_step() -> None:
         d_model=16,
         n_heads=4,
         key=jr.PRNGKey(2),
-        manifold=EuclideanSpace(),
+        manifold=georax.Euclidean(),
     )
 
     control_values = jr.normal(jr.PRNGKey(3), (12, 3))
@@ -60,7 +59,7 @@ def test_stacked_xlstm_parallel_matches_step() -> None:
         n_heads=4,
         num_layers=2,
         key=jr.PRNGKey(4),
-        manifold=EuclideanSpace(),
+        manifold=georax.Euclidean(),
     )
 
     control_values = jr.normal(jr.PRNGKey(5), (12, 3))

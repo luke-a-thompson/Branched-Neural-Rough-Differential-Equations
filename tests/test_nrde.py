@@ -8,9 +8,6 @@ import jax.numpy as jnp
 import jax.random as jr
 import pytest
 
-from stochastax.manifolds import EuclideanSpace, SO3
-from stochastax.manifolds.spd import SPDManifold
-
 from taming_the_ito_lyon.config.config import Config
 from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolution
 from taming_the_ito_lyon.models import BNRDE, NeuralRDE
@@ -27,7 +24,7 @@ def test_nrde_prepend_zero_basepoint_preserves_output_shape() -> None:
         vf_mlp_depth=2,
         signature_depth=2,
         signature_window_size=2,
-        manifold=EuclideanSpace,
+        manifold=georax.Euclidean(),
         solver=diffrax.Tsit5(),
         stepsize_controller=diffrax.ConstantStepSize(),
         evolving_out=True,
@@ -62,7 +59,7 @@ def test_bnrde_so3_stays_on_manifold() -> None:
         vf_mlp_depth=1,
         signature_depth=3,
         signature_window_size=2,
-        data_manifold=SO3,
+        data_geometry=georax.SO(3),
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
         rough_solution=RoughSolution.STRATONOVICH,
         solver=georax.CG2(),
@@ -93,7 +90,7 @@ def test_bnrde_rejects_non_georax_solver_for_problem_manifold() -> None:
             vf_mlp_depth=1,
             signature_depth=1,
             signature_window_size=2,
-            data_manifold=SO3,
+            data_geometry=georax.SO(3),
             hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
             rough_solution=RoughSolution.STRATONOVICH,
             solver=diffrax.Tsit5(),
@@ -112,7 +109,7 @@ def test_bnrde_spd_stays_on_manifold() -> None:
         vf_mlp_depth=1,
         signature_depth=1,
         signature_window_size=2,
-        data_manifold=SPDManifold,
+        data_geometry=georax.SPD(3),
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
         rough_solution=RoughSolution.ITO,
         solver=georax.CG2(),
@@ -140,12 +137,13 @@ def test_bnrde_same_count_control_stays_aligned() -> None:
         vf_mlp_depth=1,
         signature_depth=1,
         signature_window_size=1,
-        data_manifold=SPDManifold,
+        data_geometry=georax.SPD(3),
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
         rough_solution=RoughSolution.ITO,
         solver=georax.CG2(),
         evolving_out=True,
         prepend_zero_basepoint=True,
+        control_has_time_channel=True,
         key=jr.PRNGKey(8),
     )
 
@@ -165,15 +163,15 @@ def test_bnrde_rejects_spd_latent_decoder_shape() -> None:
     with pytest.raises(ValueError, match="integrated manifold state as the output"):
         BNRDE(
             input_path_dim=3,
-            initial_state_param_dim=10,
-            output_path_dim=6,
+            initial_state_param_dim=6,
+            output_path_dim=10,
             initial_hidden_dim=8,
             initial_cond_mlp_depth=1,
             vf_hidden_dim=8,
             vf_mlp_depth=1,
             signature_depth=1,
             signature_window_size=1,
-            data_manifold=SPDManifold,
+            data_geometry=georax.SPD(3),
             hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
             rough_solution=RoughSolution.ITO,
             solver=georax.CG2(),
@@ -243,7 +241,7 @@ def test_bnrde_prepend_zero_basepoint_preserves_output_shape() -> None:
         vf_mlp_depth=2,
         signature_depth=2,
         signature_window_size=2,
-        data_manifold=EuclideanSpace,
+        data_geometry=georax.Euclidean(),
         hidden_state_mode=HiddenStateMode.EUCLIDEAN,
         rough_solution=RoughSolution.STRATONOVICH,
         solver=diffrax.Tsit5(),

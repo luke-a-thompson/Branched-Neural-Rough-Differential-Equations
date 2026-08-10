@@ -3,15 +3,15 @@ import os
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import diffrax
+import georax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from stochastax.manifolds import EuclideanSpace, SO3
-
 from taming_the_ito_lyon.config.config import load_toml_config
 from taming_the_ito_lyon.models import ManifoldNeuralODE
 from taming_the_ito_lyon.training.factories import create_model
+from taming_the_ito_lyon.utils.so3 import rodrigues
 
 
 def test_manifold_neural_ode_euclidean_smoke() -> None:
@@ -20,7 +20,7 @@ def test_manifold_neural_ode_euclidean_smoke() -> None:
         anchor_dim=3,
         vf_hidden_dim=8,
         vf_mlp_depth=2,
-        manifold=EuclideanSpace,
+        manifold=georax.Euclidean(),
         key=jr.PRNGKey(0),
         stepsize_controller=diffrax.ConstantStepSize(),
         dt0=0.1,
@@ -48,7 +48,7 @@ def test_manifold_neural_ode_so3_smoke() -> None:
         anchor_dim=9,
         vf_hidden_dim=8,
         vf_mlp_depth=2,
-        manifold=SO3,
+        manifold=georax.SO(3),
         key=jr.PRNGKey(1),
         stepsize_controller=diffrax.ConstantStepSize(),
         dt0=0.1,
@@ -57,9 +57,9 @@ def test_manifold_neural_ode_so3_smoke() -> None:
     rotations = jnp.stack(
         [
             jnp.eye(3),
-            SO3.retract(jnp.eye(3) + 0.05 * jnp.ones((3, 3))),
-            SO3.retract(jnp.eye(3) + 0.10 * jnp.ones((3, 3))),
-            SO3.retract(jnp.eye(3) + 0.15 * jnp.ones((3, 3))),
+            rodrigues(jnp.array([0.05, 0.0, 0.0])),
+            rodrigues(jnp.array([0.10, 0.0, 0.0])),
+            rodrigues(jnp.array([0.15, 0.0, 0.0])),
         ],
         axis=0,
     )
