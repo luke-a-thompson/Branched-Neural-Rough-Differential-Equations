@@ -5,11 +5,10 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import equinox as eqx
+import georax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
-
-from stochastax.manifolds import Manifold
 
 from .extrapolation import ExtrapolationScheme
 from .xlstm import (
@@ -28,7 +27,7 @@ class StackedXLSTM(eqx.Module):
     norm: eqx.nn.LayerNorm
     readout_layer: eqx.nn.Linear
 
-    manifold: Manifold = eqx.field(static=True)
+    manifold: georax.Manifold
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
     extrapolation_scheme: ExtrapolationScheme | None = eqx.field(static=True)
@@ -45,7 +44,7 @@ class StackedXLSTM(eqx.Module):
         n_heads: int,
         num_layers: int,
         key: jax.Array,
-        manifold: Manifold,
+        manifold: georax.Manifold,
         d_conv: int = 4,
         xlstm_expand: int = 2,
         ffn_expand: int = 2,

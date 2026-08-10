@@ -10,9 +10,9 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
 import pysiglib
-import roughrax
-from stochastax.manifolds import Manifold
-from stochastax.manifolds.spd import SPDManifold
+from taming_the_ito_lyon.utils.roughrax_compat import roughrax
+
+from taming_the_ito_lyon.utils.geometry import project_to_manifold
 
 from .extrapolation import ExtrapolationScheme
 from .rough_utils import compute_disjoint_signature_times
@@ -66,7 +66,7 @@ class NeuralRDE(eqx.Module):
     readout_layer: eqx.nn.Linear
 
     # Static configuration
-    manifold: type[Manifold] = eqx.field(static=True)
+    manifold: georax.Manifold
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     signature_depth: int = eqx.field(static=True)
     signature_window_size: int = eqx.field(static=True)
@@ -78,6 +78,7 @@ class NeuralRDE(eqx.Module):
     n_recon: int | None = eqx.field(static=True)
 
     solver: diffrax.AbstractSolver = eqx.field(static=True)
+    stepsize_controller: diffrax.AbstractStepSizeController = eqx.field(static=True)
     adjoint: diffrax.AbstractAdjoint = eqx.field(static=True)
 
     def __init__(
@@ -93,7 +94,7 @@ class NeuralRDE(eqx.Module):
         signature_window_size: int,
         *,
         key: jax.Array,
-        manifold: type[Manifold],
+        manifold: georax.Manifold,
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         solver: diffrax.AbstractSolver = diffrax.Tsit5(),
         adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
@@ -104,7 +105,7 @@ class NeuralRDE(eqx.Module):
         extrapolation_scheme: ExtrapolationScheme | None = None,
         n_recon: int | None = None,
     ) -> None:
-        del stepsize_controller, dt0
+        del dt0
 
         k1, k2, k3 = jr.split(key, 3)
         logsig_size = _lyndon_logsig_size(input_path_dim, signature_depth)
@@ -141,6 +142,11 @@ class NeuralRDE(eqx.Module):
         self.n_recon = n_recon
 
         self.solver = solver
+        self.stepsize_controller = (
+            stepsize_controller
+            if stepsize_controller is not None
+            else diffrax.ConstantStepSize()
+        )
         self.adjoint = adjoint
 
     def _maybe_prepend_zero_basepoint(
@@ -181,12 +187,7 @@ class NeuralRDE(eqx.Module):
         )
 
     def _project_readout(self, activation: jax.Array) -> jax.Array:
-        if issubclass(self.manifold, SPDManifold):
-            matrix = SPDManifold.unvech(activation)
-            return SPDManifold.retract(matrix)
-        if activation.shape[-1] == 9:
-            return self.manifold.retract(jnp.reshape(activation, (3, 3)))
-        return self.manifold.retract(activation)
+        return project_to_manifold(self.manifold, activation)
 
     def _forward_with_values(
         self,
@@ -217,7 +218,16 @@ class NeuralRDE(eqx.Module):
         def vector_field(y: jax.Array) -> jax.Array:
             return self.cde_func(y)
 
-        term = roughrax.RoughTerm(vector_field, control, georax.Euclidean())
+        term = roughrax.RoughTerm.from_lifted_vector_field(
+            vector_field, control, georax.Euclidean()
+        )
+        stepsize_controller = (
+            diffrax.StepTo(signature_ts)
+            if isinstance(self.stepsize_controller, diffrax.ConstantStepSize)
+            else diffrax.ClipStepSizeController(
+                self.stepsize_controller, step_ts=signature_ts
+            )
+        )
         solution = diffrax.diffeqsolve(
             term,
             roughrax.LogODE(self.solver),
@@ -225,10 +235,10 @@ class NeuralRDE(eqx.Module):
             t1=ts[-1],
             dt0=None,
             y0=y0,
-            stepsize_controller=diffrax.StepTo(signature_ts),
+            stepsize_controller=stepsize_controller,
             saveat=diffrax.SaveAt(ts=ts),
             adjoint=self.adjoint,
-            max_steps=int(signature_ts.shape[0]) + 4,
+            max_steps=4096,
         )
         assert solution.ys is not None
         return solution.ys, solution.stats

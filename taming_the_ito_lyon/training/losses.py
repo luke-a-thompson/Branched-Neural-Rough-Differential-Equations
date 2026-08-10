@@ -4,9 +4,9 @@ from typing import Callable
 
 import jax
 import jax.numpy as jnp
-from stochastax.manifolds.spd import SPDManifold
 
 from taming_the_ito_lyon.config.config import Config
+from taming_the_ito_lyon.utils.geometry import spd_unvech, spd_vech
 
 
 def _maybe_wrap_extrapolation(
@@ -105,7 +105,7 @@ def signature_kernel_score(
             r0_t = jnp.swapaxes(path[:1], -1, -2)
             return log_map(r0_t @ path)  # (T, 3)
         if value_dim_i == 6:
-            return SPDManifold.vech(path)  # (T, 6)
+            return spd_vech(path)  # (T, 6)
         raise ValueError(
             f"Matrix paths require value_dim in (3, 6); got {value_dim_i}."
         )
@@ -191,7 +191,7 @@ def branched_signature_kernel_score(
             return x
         if x.ndim == 4 and x.shape[-2:] == (3, 3):
             b, t = int(x.shape[0]), int(x.shape[1])
-            return SPDManifold.vech(x.reshape((b * t, 3, 3))).reshape((b, t, 6))
+            return spd_vech(x.reshape((b * t, 3, 3))).reshape((b, t, 6))
         raise ValueError(
             f"Expected {name} shaped (B,T), (B,T,C), or (B,T,3,3); got {x.shape}"
         )
@@ -428,5 +428,5 @@ def _maybe_unvech_spd(
     if x.ndim >= 2 and x.shape[-2:] == (3, 3):
         return x
     if x.shape[-1] == 6:
-        return SPDManifold.unvech(x)
+        return spd_unvech(x)
     return x

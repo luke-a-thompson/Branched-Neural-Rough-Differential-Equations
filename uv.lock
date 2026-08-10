@@ -150,7 +150,7 @@ dependencies = [
 [[package]]
 name = "diffrax-lowstorage"
 version = "0.1.0"
-source = { git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git#d19f29ac55b31dd2d577328f901222bebba79623" }
+source = { git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=dc3a519919a634701c9cbb8cb5afc5f9d102a757#dc3a519919a634701c9cbb8cb5afc5f9d102a757" }
 dependencies = [
     { name = "diffrax" },
     { name = "jax" },
@@ -234,7 +234,7 @@ wheels = [
 [[package]]
 name = "georax"
 version = "0.1.0"
-source = { git = "https://github.com/luke-a-thompson/georax.git#77c9feebfdb3d1917f3f2273d49129ce0ab04fda" }
+source = { git = "https://github.com/luke-a-thompson/georax.git#6c6c80b042f952646d5337b1e565179064076a79" }
 dependencies = [
     { name = "diffrax" },
     { name = "diffrax-lowstorage" },
@@ -1200,7 +1200,7 @@ wheels = [
 [[package]]
 name = "roughrax"
 version = "0.1.0"
-source = { git = "https://github.com/luke-a-thompson/roughrax.git#1b72b98d7165737a0c05ae51668d6706e2f8ef3d" }
+source = { git = "https://github.com/luke-a-thompson/roughrax.git#f46a947ff2cd998c3cd6980ef25db40b20f9a159" }
 dependencies = [
     { name = "diffrax" },
     { name = "equinox" },
@@ -1316,15 +1316,6 @@ wheels = [
 ]
 
 [[package]]
-name = "stochastax"
-version = "0.5.0"
-source = { git = "https://github.com/luke-a-thompson/Stochastax.git?branch=ArbitraryDepthBranchedRP#09c9612e9352bb05a0a92a30e2bc391cdd2c78e1" }
-dependencies = [
-    { name = "diffrax" },
-    { name = "jax" },
-]
-
-[[package]]
 name = "sympy"
 version = "1.14.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1356,7 +1347,6 @@ dependencies = [
     { name = "pysiglib", extra = ["cuda"] },
     { name = "roughrax" },
     { name = "scipy" },
-    { name = "stochastax" },
     { name = "tqdm" },
 ]
 
@@ -1369,7 +1359,7 @@ dev = [
 requires-dist = [
     { name = "cyreal", git = "https://github.com/luke-a-thompson/cyreal_dynamics.git?branch=master" },
     { name = "diffrax", git = "https://github.com/sammccallum/diffrax?rev=aeb1335b5a6278e85a270231e0f97b8db4453ae6" },
-    { name = "diffrax-lowstorage", git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git" },
+    { name = "diffrax-lowstorage", git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=dc3a519919a634701c9cbb8cb5afc5f9d102a757" },
     { name = "equinox", specifier = ">=0.13.2" },
     { name = "georax", git = "https://github.com/luke-a-thompson/georax.git" },
     { name = "jax", extras = ["cuda"], specifier = ">=0.8.1" },
@@ -1382,7 +1372,6 @@ requires-dist = [
     { name = "pysiglib", extras = ["cuda"], specifier = ">=3.1.0" },
     { name = "roughrax", git = "https://github.com/luke-a-thompson/roughrax.git" },
     { name = "scipy", specifier = ">=1.16.0" },
-    { name = "stochastax", git = "https://github.com/luke-a-thompson/Stochastax.git?branch=ArbitraryDepthBranchedRP" },
     { name = "tqdm", specifier = ">=4.67.1" },
 ]
 
