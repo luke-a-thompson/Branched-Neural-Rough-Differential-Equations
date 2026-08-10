@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import math
-
 from collections.abc import Callable
 
 import diffrax
 import equinox as eqx
+import georax
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 
-from stochastax.manifolds import Manifold
+from taming_the_ito_lyon.utils.geometry import project_to_manifold
 
 
 def _identity(x: jax.Array) -> jax.Array:
@@ -66,15 +65,13 @@ class ManifoldNeuralODE(eqx.Module):
     uses the first observed state as the initial condition. The remainder of the
     input path is ignored.
 
-    To keep the implementation simple and compatible with the existing
-    `stochastax` API, the moving chart uses the approximation
-
-        Retr_x(v) := manifold.retract(x + v).
+    The neural field returns georax frame coordinates, and each segment update is
+    applied through the geometry's local chart.
     """
 
     vector_field: LocalCoordinateVectorField
 
-    manifold: type[Manifold] = eqx.field(static=True)
+    manifold: georax.Manifold
     local_dim: int = eqx.field(static=True)
     future_only_loss: bool = eqx.field(static=True)
     steps_per_segment: int = eqx.field(static=True)
@@ -90,7 +87,7 @@ class ManifoldNeuralODE(eqx.Module):
         anchor_dim: int,
         vf_hidden_dim: int,
         vf_mlp_depth: int,
-        manifold: type[Manifold],
+        manifold: georax.Manifold,
         key: jax.Array,
         output_scale: float = 1.0,
         activation: Callable[[jax.Array], jax.Array] = jnn.softplus,
@@ -102,6 +99,14 @@ class ManifoldNeuralODE(eqx.Module):
         dt0: float | None = None,
     ) -> None:
         self.local_dim = int(local_dim)
+        if not isinstance(manifold, georax.Euclidean) and manifold.coordinate_shape != (
+            self.local_dim,
+        ):
+            raise ValueError(
+                f"{type(manifold).__name__} requires local_dim="
+                f"{manifold.coordinate_shape[0]}; got {self.local_dim}."
+            )
+        manifold.select_chart(required_order=2)
         self.manifold = manifold
         self.future_only_loss = bool(future_only_loss)
         self.steps_per_segment = max(1, int(steps_per_segment))
@@ -119,31 +124,8 @@ class ManifoldNeuralODE(eqx.Module):
         self.stepsize_controller = stepsize_controller
         self.dt0 = dt0
 
-    def _frame(self, anchor: jax.Array) -> jax.Array:
-        ambient_dim = math.prod(anchor.shape)
-        if self.local_dim > ambient_dim:
-            raise ValueError(
-                f"local_dim={self.local_dim} exceeds ambient_dim={ambient_dim}."
-            )
-
-        canonical_basis = jnp.eye(ambient_dim, dtype=anchor.dtype).reshape(
-            (ambient_dim,) + anchor.shape
-        )
-        tangent_basis = jax.vmap(lambda v: self.manifold.project_to_tangent(anchor, v))(
-            canonical_basis
-        )
-        tangent_basis = tangent_basis.reshape(ambient_dim, ambient_dim).T
-        u, _, _ = jnp.linalg.svd(tangent_basis, full_matrices=False)
-        return u[:, : self.local_dim]
-
-    def _coordinates_to_tangent(self, anchor: jax.Array, u: jax.Array) -> jax.Array:
-        frame = self._frame(anchor)
-        tangent_flat = frame @ u
-        return tangent_flat.reshape(anchor.shape)
-
     def _chart_map(self, anchor: jax.Array, u: jax.Array) -> jax.Array:
-        tangent = self._coordinates_to_tangent(anchor, u)
-        return self.manifold.retract(anchor + tangent)
+        return self.manifold.apply_increment(anchor, u)
 
     def _solve_segment(
         self,
@@ -195,7 +177,7 @@ class ManifoldNeuralODE(eqx.Module):
 
     def _extract_initial_condition(self, control_values: jax.Array) -> jax.Array:
         if control_values.ndim == 3:
-            return self.manifold.retract(control_values[0])
+            return project_to_manifold(self.manifold, control_values[0])
 
         if control_values.ndim != 2:
             raise ValueError(
@@ -204,9 +186,7 @@ class ManifoldNeuralODE(eqx.Module):
             )
 
         x0 = control_values[0]
-        if x0.shape[-1] == 9:
-            return self.manifold.retract(x0.reshape(3, 3))
-        return self.manifold.retract(x0)
+        return project_to_manifold(self.manifold, x0)
 
     def __call__(self, control_values: jax.Array) -> jax.Array:
         if control_values.shape[0] == 0:

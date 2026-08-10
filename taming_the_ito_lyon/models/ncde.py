@@ -5,6 +5,7 @@ https://docs.kidger.site/diffrax/examples/neural_cde/
 """
 
 import equinox as eqx
+import georax
 import jax
 import jax.numpy as jnp
 import jax.nn as jnn
@@ -12,8 +13,8 @@ import jax.random as jr
 import diffrax
 from typing import Callable
 
-from stochastax.manifolds import Manifold
-from stochastax.manifolds.spd import SPDManifold
+from taming_the_ito_lyon.utils.geometry import project_to_manifold
+
 from .extrapolation import ExtrapolationScheme
 
 
@@ -75,7 +76,7 @@ class NeuralCDE(eqx.Module):
     readout_layer: eqx.nn.Linear
 
     # Static configuration
-    manifold: type[Manifold] = eqx.field(static=True)
+    manifold: georax.Manifold
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
     control_interpolation: str = eqx.field(static=True)
@@ -101,7 +102,7 @@ class NeuralCDE(eqx.Module):
         vf_mlp_depth: int,
         *,
         key: jax.Array,
-        manifold: type[Manifold],
+        manifold: georax.Manifold,
         solver: diffrax.AbstractAdaptiveSolver = diffrax.Tsit5(),
         adjoint: diffrax.AbstractAdjoint = diffrax.RecursiveCheckpointAdjoint(),
         stepsize_controller: diffrax.AbstractStepSizeController,
@@ -158,10 +159,7 @@ class NeuralCDE(eqx.Module):
 
         def apply_single(y: jax.Array) -> jax.Array:
             activation = self.readout_activation(self.readout_layer(y))
-            if issubclass(self.manifold, SPDManifold):
-                matrix = SPDManifold.unvech(activation)
-                return SPDManifold.retract(matrix)
-            return self.manifold.retract(activation)
+            return project_to_manifold(self.manifold, activation)
 
         return jax.vmap(apply_single)(hidden_states)
 

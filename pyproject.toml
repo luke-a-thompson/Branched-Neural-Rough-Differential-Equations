@@ -9,7 +9,6 @@ dependencies = [
     "diffrax>=0.7.0",
     "equinox>=0.13.2",
     "optax>=0.2.6",
-    "stochastax",
     "cyreal",
     "numpy>=2.0.0",
     "scipy>=1.16.0",
@@ -25,12 +24,11 @@ dependencies = [
 ]
 
 [tool.uv.sources]
-stochastax = { git = "https://github.com/luke-a-thompson/Stochastax.git", branch = "ArbitraryDepthBranchedRP" }
 cyreal = { git = "https://github.com/luke-a-thompson/cyreal_dynamics.git", branch = "master" }
 diffrax = { git = "https://github.com/sammccallum/diffrax", rev = "aeb1335b5a6278e85a270231e0f97b8db4453ae6" }
-diffrax-lowstorage = {git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git"}
-georax = {git = "https://github.com/luke-a-thompson/georax.git"}
-roughrax = {git = "https://github.com/luke-a-thompson/roughrax.git"}
+diffrax-lowstorage = { git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git", rev = "dc3a519919a634701c9cbb8cb5afc5f9d102a757" }
+georax = { git = "https://github.com/luke-a-thompson/georax.git" }
+roughrax = { git = "https://github.com/luke-a-thompson/roughrax.git" }
 
 [project.scripts]
 train = "taming_the_ito_lyon.training.train_cli:main"

@@ -3,14 +3,13 @@ from collections.abc import Callable
 
 import diffrax
 import equinox as eqx
+import georax
 import jax
 import jax.numpy as jnp
 import optax
 from cyreal.loader import DataLoader
 from cyreal.transforms import BatchTransform
 from diffrax import ConstantStepSize, PIDController
-from stochastax.manifolds import SO3, EuclideanSpace, Manifold
-from stochastax.manifolds.spd import SPDManifold
 
 from taming_the_ito_lyon.config import (
     BNRDEConfig,
@@ -32,6 +31,7 @@ from taming_the_ito_lyon.config.config_options import (
     ManifoldType,
     SolverType,
     StepsizeControllerType,
+    TrainingMode,
 )
 from taming_the_ito_lyon.models import (
     BNRDE,
@@ -101,14 +101,21 @@ def _maybe_create_extrapolation_scheme(
 
 def create_manifold_from_type(
     manifold_type: ManifoldType,
-) -> type[Manifold]:
+    state_param_dim: int,
+) -> georax.Manifold:
     match manifold_type:
         case ManifoldType.EUCLIDEAN:
-            return EuclideanSpace
+            return georax.Euclidean()
         case ManifoldType.SO3:
-            return SO3
+            return georax.SO(3)
         case ManifoldType.SPD:
-            return SPDManifold
+            root = math.isqrt(8 * int(state_param_dim) + 1)
+            if root * root != 8 * int(state_param_dim) + 1:
+                raise ValueError(
+                    "SPD outputs require state_param_dim=n(n+1)/2; "
+                    f"got {state_param_dim}."
+                )
+            return georax.SPD((root - 1) // 2)
         case _:
             raise ValueError(f"Unknown manifold: {manifold_type}")
 
@@ -160,19 +167,11 @@ def create_stepsize_controller(
 
 
 def _infer_local_dim_for_m_ode(
-    manifold: type[Manifold],
+    manifold: georax.Manifold,
     input_path_dim: int,
 ) -> int:
-    if manifold is SO3:
-        return 3
-    if manifold is SPDManifold:
-        disc = 1 + 4 * int(input_path_dim)
-        n = math.isqrt(disc)
-        if n * n != disc:
-            raise ValueError(
-                f"Cannot infer SPD local dimension from input_path_dim={input_path_dim}."
-            )
-        return (n - 1) // 2
+    if isinstance(manifold, (georax.SO, georax.SPD)):
+        return math.prod(manifold.coordinate_shape)
     return int(input_path_dim)
 
 
@@ -187,9 +186,11 @@ def create_model(
         config, input_path_dim=input_path_dim, key=key
     )
 
-    manifold = create_manifold_from_type(config.experiment_config.manifold)
+    manifold = create_manifold_from_type(
+        config.experiment_config.manifold, output_path_dim
+    )
     hidden_manifold = (
-        EuclideanSpace
+        georax.Euclidean()
         if config.experiment_config.hidden_state_mode == HiddenStateMode.EUCLIDEAN
         else manifold
     )
@@ -254,12 +255,16 @@ def create_model(
                 output_path_dim=output_path_dim,
                 signature_depth=config.nn_config.signature_depth,
                 signature_window_size=config.nn_config.signature_window_size,
-                data_manifold=manifold,
+                data_geometry=manifold,
                 hidden_state_mode=config.experiment_config.hidden_state_mode,
                 rough_solution=config.nn_config.rough_solution,
                 solver=solver,
                 stepsize_controller=stepsize_controller,
                 adjoint=adjoint,
+                control_has_time_channel=(
+                    config.experiment_config.training_mode == TrainingMode.UNCONDITIONAL
+                    or extrapolation_scheme is not None
+                ),
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
                 key=model_key,
@@ -278,8 +283,6 @@ def create_model(
                 key=model_key,
             )
         case GRUConfig():
-            # GRU expects a manifold *instance*, while the CDE/RDE models use the
-            # manifold type directly (class methods). We instantiate it here.
             return GRU(
                 input_path_dim=input_path_dim,
                 gru_state_dim=config.nn_config.gru_state_dim,
@@ -287,8 +290,8 @@ def create_model(
                 mlp_hidden_dim=config.nn_config.init_hidden_dim,
                 initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
                 key=model_key,
-                manifold=manifold(),
-                hidden_manifold=hidden_manifold(),
+                manifold=manifold,
+                hidden_manifold=hidden_manifold,
                 evolving_out=config.experiment_config.evolving_out,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
@@ -301,8 +304,8 @@ def create_model(
                 mlp_hidden_dim=config.nn_config.init_hidden_dim,
                 initial_cond_mlp_depth=config.nn_config.initial_cond_mlp_depth,
                 key=model_key,
-                manifold=manifold(),
-                hidden_manifold=hidden_manifold(),
+                manifold=manifold,
+                hidden_manifold=hidden_manifold,
                 num_layers=config.nn_config.num_layers,
                 evolving_out=config.experiment_config.evolving_out,
                 extrapolation_scheme=extrapolation_scheme,
@@ -319,7 +322,7 @@ def create_model(
                 ffn_expand=config.nn_config.ffn_expand,
                 use_ffn=config.nn_config.use_ffn,
                 key=model_key,
-                manifold=manifold(),
+                manifold=manifold,
                 evolving_out=config.experiment_config.evolving_out,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,
@@ -336,7 +339,7 @@ def create_model(
                 ffn_expand=config.nn_config.ffn_expand,
                 use_ffn=config.nn_config.use_ffn,
                 key=model_key,
-                manifold=manifold(),
+                manifold=manifold,
                 evolving_out=config.experiment_config.evolving_out,
                 extrapolation_scheme=extrapolation_scheme,
                 n_recon=config.experiment_config.n_recon,

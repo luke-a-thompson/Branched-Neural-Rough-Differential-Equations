@@ -325,12 +325,11 @@ def _make_branched_ito_signature_moment_gap_metrics(
     *,
     depth: int = 2,
 ) -> Callable[..., dict[str, float]]:
-    """Return a metric fn that reuses a cached GL Hopf algebra."""
-    from stochastax.hopf_algebras import GLHopfAlgebra
+    """Return a metric function backed by roughrax's PySigLib backend."""
+    import pysiglib
+    from pysiglib.jax_api import branched_sig
 
-    hopf = GLHopfAlgebra.build(ambient_dim=2, depth=int(depth))
-    if hopf.degree2_chain_indices is None:
-        raise ValueError("GLHopfAlgebra missing degree-2 chain indices.")
+    pysiglib.prepare_branched_sig(2, int(depth), planar=False)
 
     def _branched_ito_signature_moment_gap_metrics(
         *,
@@ -369,7 +368,6 @@ def _make_branched_ito_signature_moment_gap_metrics(
         pred = jax.device_put(pred_paths[:n_pred].astype(np.float32))
         target = jax.device_put(target_paths[:n_target].astype(np.float32))
 
-        from stochastax.control_lifts import compute_nonplanar_branched_signature
         import jax.numpy as jnp
 
         t = jnp.linspace(0.0, 1.0, int(T), dtype=pred.dtype)  # (T,)
@@ -378,18 +376,17 @@ def _make_branched_ito_signature_moment_gap_metrics(
             path = jnp.stack([t, y], axis=1)  # (T, 2)
             increments = path[1:, :] - path[:-1, :]
             dy = increments[:, 1]
-            cov = jnp.zeros((T - 1, 2, 2), dtype=path.dtype)
-            cov = cov.at[:, 1, 1].set(dy**2)
-            sig = compute_nonplanar_branched_signature(
-                path=path,
-                depth=int(depth),
-                hopf=hopf,
-                mode="full",
-                cov_increments=cov,
+            correction = jnp.zeros((T - 1, 2, 2), dtype=path.dtype)
+            correction = correction.at[:, 1, 1].set(dy**2)
+            sig = branched_sig(
+                path,
+                int(depth),
+                planar=False,
+                correction=correction.reshape(T - 1, 4),
             )
-            lvl1 = sig.coeffs[0]
-            lvl2 = sig.coeffs[1]
-            chain = lvl2[hopf.degree2_chain_indices]
+            lvl1 = sig[:2]
+            lvl2 = sig[2:]
+            chain = lvl2
             return lvl1, lvl2, chain
 
         pred_lvl1, pred_lvl2, pred_chain = jax.vmap(_signature_stats)(pred)
@@ -910,9 +907,9 @@ def get_spd_covariance_results(
             return np.asarray(x_np[:, t, :, :], dtype=np.float64)
         if x_np.ndim == 3 and int(x_np.shape[-1]) == 6:
             xt = x_np[:, t, :]  # (B, 6)
-            from stochastax.manifolds.spd import SPDManifold
+            from taming_the_ito_lyon.utils.geometry import spd_unvech
 
-            mats = SPDManifold.unvech(jax.device_put(xt.astype(np.float32)))
+            mats = spd_unvech(jax.device_put(xt.astype(np.float32)))
             return np.asarray(jax.device_get(mats), dtype=np.float64)
         raise ValueError(
             f"Expected preds/targets shaped (B,T,6) or (B,T,3,3); got {x_np.shape}"
