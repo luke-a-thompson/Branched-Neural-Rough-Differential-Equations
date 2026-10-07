@@ -7,7 +7,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import jax
 import jax.numpy as jnp
-from stochastax.manifolds.spd import SPDManifold
+
+from taming_the_ito_lyon.utils.geometry import spd_unvech
 
 SPD_EIGENVALUE_FAN_YTICKS = np.arange(0.25, 2.01, 0.25)
 
@@ -159,7 +160,7 @@ def _to_spd_matrix_paths(x: np.ndarray) -> np.ndarray:
     if x_np.ndim == 4 and x_np.shape[-2:] == (3, 3):
         return x_np
     if x_np.ndim == 3 and int(x_np.shape[-1]) == 6:
-        mats = SPDManifold.unvech(jnp.asarray(x_np, dtype=jnp.float32))
+        mats = spd_unvech(jnp.asarray(x_np, dtype=jnp.float32))
         return np.asarray(jax.device_get(mats))
     raise ValueError(
         f"Expected SPD paths shaped (B,T,6) or (B,T,3,3); got {x_np.shape}"

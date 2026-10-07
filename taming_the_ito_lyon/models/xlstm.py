@@ -7,12 +7,12 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 import equinox as eqx
+import georax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from stochastax.manifolds import Manifold
-from stochastax.manifolds.spd import SPDManifold
+from taming_the_ito_lyon.utils.geometry import project_to_manifold
 
 from .extrapolation import ExtrapolationScheme
 
@@ -83,10 +83,8 @@ def _build_input_sequence(
     return jax.vmap(control.evaluate)(ts)
 
 
-def _retract_output(manifold: Manifold, y: jax.Array) -> jax.Array:
-    if isinstance(manifold, SPDManifold):
-        return SPDManifold.retract(SPDManifold.unvech(y))
-    return manifold.retract(y)
+def _retract_output(manifold: georax.Manifold, y: jax.Array) -> jax.Array:
+    return project_to_manifold(manifold, y)
 
 
 @dataclass(frozen=True)
@@ -490,7 +488,7 @@ class XLSTM(eqx.Module):
     norm: eqx.nn.LayerNorm
     readout_layer: eqx.nn.Linear
 
-    manifold: Manifold = eqx.field(static=True)
+    manifold: georax.Manifold
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
     extrapolation_scheme: ExtrapolationScheme | None = eqx.field(static=True)
@@ -505,7 +503,7 @@ class XLSTM(eqx.Module):
         d_model: int,
         n_heads: int,
         key: jax.Array,
-        manifold: Manifold,
+        manifold: georax.Manifold,
         d_conv: int = 4,
         xlstm_expand: int = 2,
         ffn_expand: int = 2,

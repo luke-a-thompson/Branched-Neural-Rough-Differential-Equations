@@ -12,7 +12,7 @@ Requires Python 3.13 and `uv`.
 uv sync --frozen
 ```
 
-The default dependencies target CUDA-enabled JAX. For CPU-only work, adjust the JAX-related dependencies in `pyproject.toml` as needed.
+The default dependencies target CUDA-enabled JAX and the published `pysiglib[cuda]` package. For CPU-only work, remove the `cuda` extras from JAX and both PySigLib entries in `pyproject.toml` (the project dependency and the uv override), then regenerate the lockfile with `uv lock`.
 
 ## Train
 

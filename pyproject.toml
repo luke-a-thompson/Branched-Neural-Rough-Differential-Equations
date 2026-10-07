@@ -5,11 +5,10 @@ description = "Code for the ICML2026 paper Learning Manifold and Itô Dynamics w
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "jax[cuda]>=0.8.1",
-    "diffrax>=0.7.0",
+    "jax[cuda]>=0.9.1",
+    "diffrax>=0.7.1",
     "equinox>=0.13.2",
     "optax>=0.2.6",
-    "stochastax",
     "cyreal",
     "numpy>=2.0.0",
     "scipy>=1.16.0",
@@ -20,17 +19,31 @@ dependencies = [
     "lovely-jax>=0.1.4",
     "diffrax-lowstorage",
     "georax",
-    "pysiglib[cuda]>=3.1.0",
+    "pysiglib[cuda]>=4.0.0",
     "roughrax"
 ]
 
 [tool.uv.sources]
-stochastax = { git = "https://github.com/luke-a-thompson/Stochastax.git", branch = "ArbitraryDepthBranchedRP" }
 cyreal = { git = "https://github.com/luke-a-thompson/cyreal_dynamics.git", branch = "master" }
 diffrax = { git = "https://github.com/sammccallum/diffrax", rev = "aeb1335b5a6278e85a270231e0f97b8db4453ae6" }
-diffrax-lowstorage = {git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git"}
-georax = {git = "https://github.com/luke-a-thompson/georax.git"}
-roughrax = {git = "https://github.com/luke-a-thompson/roughrax.git"}
+diffrax-lowstorage = { git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git", rev = "3f72fe75660ed325bfc35086239950c73c3e98c8" }
+georax = { git = "https://github.com/luke-a-thompson/georax.git", rev = "8cbae326c64eccd0a2c37d1ea7767a14cc29b8ae" }
+roughrax = { git = "https://github.com/luke-a-thompson/roughrax.git", rev = "4a73da1c0e9d01dd3910063b8989c1a0f212d90d" }
+torch = { index = "pytorch-cpu" }
+
+[tool.uv]
+# Use the reviewed revisions even when dependencies declare their own Git sources.
+override-dependencies = [
+    "georax @ git+https://github.com/luke-a-thompson/georax.git@8cbae326c64eccd0a2c37d1ea7767a14cc29b8ae",
+    "diffrax-lowstorage @ git+https://github.com/luke-a-thompson/diffrax-lowstorage.git@3f72fe75660ed325bfc35086239950c73c3e98c8",
+    # Use the published PySigLib package instead of Roughrax's Git source.
+    "pysiglib[cuda]>=4.0.0",
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [project.scripts]
 train = "taming_the_ito_lyon.training.train_cli:main"

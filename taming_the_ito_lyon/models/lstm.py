@@ -5,12 +5,12 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import equinox as eqx
+import georax
 import jax
 import jax.numpy as jnp
 import jax.random as jr
 
-from stochastax.manifolds import Manifold
-from stochastax.manifolds.spd import SPDManifold
+from taming_the_ito_lyon.utils.geometry import project_to_manifold
 
 from .extrapolation import ExtrapolationScheme
 
@@ -30,12 +30,6 @@ def _build_input_sequence(
     return jax.vmap(control.evaluate)(ts)
 
 
-def _retract_output(manifold: Manifold, y: jax.Array) -> jax.Array:
-    if isinstance(manifold, SPDManifold):
-        return SPDManifold.retract(SPDManifold.unvech(y))
-    return manifold.retract(y)
-
-
 class LSTM(eqx.Module):
     """A simple stacked LSTM sequence model."""
 
@@ -43,8 +37,8 @@ class LSTM(eqx.Module):
     cells: tuple[eqx.nn.LSTMCell, ...]
     readout_layer: eqx.nn.Linear
 
-    manifold: Manifold = eqx.field(static=True)
-    hidden_manifold: Manifold = eqx.field(static=True)
+    manifold: georax.Manifold
+    hidden_manifold: georax.Manifold
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
     num_layers: int = eqx.field(static=True)
@@ -61,8 +55,8 @@ class LSTM(eqx.Module):
         initial_cond_mlp_depth: int,
         *,
         key: jax.Array,
-        manifold: Manifold,
-        hidden_manifold: Manifold | None = None,
+        manifold: georax.Manifold,
+        hidden_manifold: georax.Manifold | None = None,
         num_layers: int = 2,
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         evolving_out: bool = True,
@@ -114,7 +108,7 @@ class LSTM(eqx.Module):
 
     def _initial_states(self, x0: jax.Array) -> tuple[tuple[jax.Array, jax.Array], ...]:
         h0 = self.initial_cond_mlp(x0).reshape(self.num_layers, self.hidden_size)
-        h0 = jax.vmap(self.hidden_manifold.retract)(h0)
+        h0 = jax.vmap(lambda h: project_to_manifold(self.hidden_manifold, h))(h0)
         c0 = jnp.zeros_like(h0)
         return tuple((h0[i], c0[i]) for i in range(self.num_layers))
 
@@ -127,7 +121,7 @@ class LSTM(eqx.Module):
         layer_input = x_t
         for cell, (h, c) in zip(self.cells, states, strict=True):
             h_next, c_next = cell(layer_input, (h, c))
-            h_next = self.hidden_manifold.retract(h_next)
+            h_next = project_to_manifold(self.hidden_manifold, h_next)
             next_states.append((h_next, c_next))
             layer_input = h_next
         return layer_input, tuple(next_states)
@@ -152,7 +146,7 @@ class LSTM(eqx.Module):
     def _apply_readout(self, hidden_states: jax.Array) -> jax.Array:
         def apply_single(h: jax.Array) -> jax.Array:
             y = self.readout_activation(self.readout_layer(h))
-            return _retract_output(self.manifold, y)
+            return project_to_manifold(self.manifold, y)
 
         return jax.vmap(apply_single)(hidden_states)
 
@@ -166,4 +160,4 @@ class LSTM(eqx.Module):
             return self._apply_readout(hidden)
 
         y = self.readout_activation(self.readout_layer(hidden[-1]))
-        return _retract_output(self.manifold, y)
+        return project_to_manifold(self.manifold, y)

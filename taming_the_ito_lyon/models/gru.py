@@ -6,8 +6,7 @@ Simple GRU model with the same high-level interface as the CDE/RDE models:
   extrapolation_scheme is provided; the scheme builds a control path that covers
   reconstruction + future, and we evaluate it at `ts` to obtain a discrete sequence.
 
-Additionally supports a Stochastax manifold, retracting the hidden state and the
-readout outputs (mirroring the behavior in `bnrde.py`).
+Additionally supports georax output geometries.
 """
 
 from __future__ import annotations
@@ -15,13 +14,13 @@ from __future__ import annotations
 from collections.abc import Callable
 
 import equinox as eqx
+import georax
 import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
 
-from stochastax.manifolds import Manifold
-from stochastax.manifolds.spd import SPDManifold
+from taming_the_ito_lyon.utils.geometry import project_to_manifold
 
 from .extrapolation import ExtrapolationScheme
 
@@ -34,8 +33,8 @@ class GRU(eqx.Module):
     readout_layer: eqx.nn.Linear
 
     # Static configuration
-    manifold: Manifold = eqx.field(static=True)
-    hidden_manifold: Manifold = eqx.field(static=True)
+    manifold: georax.Manifold
+    hidden_manifold: georax.Manifold
     readout_activation: Callable[[jax.Array], jax.Array] = eqx.field(static=True)
     evolving_out: bool = eqx.field(static=True)
 
@@ -52,8 +51,8 @@ class GRU(eqx.Module):
         initial_cond_mlp_depth: int,
         *,
         key: jax.Array,
-        manifold: Manifold,
-        hidden_manifold: Manifold | None = None,
+        manifold: georax.Manifold,
+        hidden_manifold: georax.Manifold | None = None,
         readout_activation: Callable[[jax.Array], jax.Array] = lambda x: x,
         evolving_out: bool = True,
         extrapolation_scheme: ExtrapolationScheme | None = None,
@@ -89,11 +88,11 @@ class GRU(eqx.Module):
     def _forward_from_x(self, x: jax.Array) -> jax.Array:
         """Run the GRU over a discrete input sequence x of shape (T, C)."""
         x0 = x[0]
-        h0 = self.hidden_manifold.retract(self.initial_cond_mlp(x0))
+        h0 = project_to_manifold(self.hidden_manifold, self.initial_cond_mlp(x0))
 
         def step(h: jax.Array, xt: jax.Array) -> tuple[jax.Array, jax.Array]:
             h_new = self.cell(xt, h)
-            h_new = self.hidden_manifold.retract(h_new)
+            h_new = project_to_manifold(self.hidden_manifold, h_new)
             return h_new, h_new
 
         # We keep h0 as the hidden state at time ts[0] (like diffeqsave does).
@@ -104,10 +103,7 @@ class GRU(eqx.Module):
     def _apply_readout(self, hidden_states: jax.Array) -> jax.Array:
         def apply_single(h: jax.Array) -> jax.Array:
             y = self.readout_activation(self.readout_layer(h))
-            if isinstance(self.manifold, SPDManifold):
-                matrix = SPDManifold.unvech(y)
-                return SPDManifold.retract(matrix)
-            return self.manifold.retract(y)
+            return project_to_manifold(self.manifold, y)
 
         return jax.vmap(apply_single)(hidden_states)
 
@@ -133,7 +129,4 @@ class GRU(eqx.Module):
             return self._apply_readout(hidden)
 
         final_output = self.readout_activation(self.readout_layer(hidden[-1]))
-        if isinstance(self.manifold, SPDManifold):
-            matrix = SPDManifold.unvech(final_output)
-            return SPDManifold.retract(matrix)
-        return self.manifold.retract(final_output)
+        return project_to_manifold(self.manifold, final_output)
