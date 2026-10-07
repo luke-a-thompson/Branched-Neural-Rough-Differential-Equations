@@ -10,12 +10,12 @@ import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
 import pysiglib
-from taming_the_ito_lyon.utils.roughrax_compat import roughrax
+import roughrax
 
 from taming_the_ito_lyon.utils.geometry import project_to_manifold
 
 from .extrapolation import ExtrapolationScheme
-from .rough_utils import compute_disjoint_signature_times
+from .rough_utils import compute_disjoint_signature_times, signature_stepsize_controller
 
 
 def _lyndon_logsig_size(input_path_dim: int, signature_depth: int) -> int:
@@ -208,7 +208,7 @@ class NeuralRDE(eqx.Module):
         signature_ts = compute_disjoint_signature_times(
             ts, int(self.signature_window_size)
         )
-        control = roughrax.SignatureInterpolation(
+        control = roughrax.LogSignatureInterpolation(
             driver,
             signature_ts,
             depth=int(self.signature_depth),
@@ -221,12 +221,8 @@ class NeuralRDE(eqx.Module):
         term = roughrax.RoughTerm.from_lifted_vector_field(
             vector_field, control, georax.Euclidean()
         )
-        stepsize_controller = (
-            diffrax.StepTo(signature_ts)
-            if isinstance(self.stepsize_controller, diffrax.ConstantStepSize)
-            else diffrax.ClipStepSizeController(
-                self.stepsize_controller, step_ts=signature_ts
-            )
+        stepsize_controller = signature_stepsize_controller(
+            self.stepsize_controller, signature_ts, self.solver
         )
         solution = diffrax.diffeqsolve(
             term,

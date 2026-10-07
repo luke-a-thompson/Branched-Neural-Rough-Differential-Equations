@@ -3,7 +3,9 @@ import os
 os.environ.setdefault("JAX_PLATFORMS", "cpu")
 
 import diffrax
+import equinox as eqx
 import georax
+import jax
 import jax.numpy as jnp
 import jax.random as jr
 import pytest
@@ -13,7 +15,10 @@ from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolu
 from taming_the_ito_lyon.models import BNRDE, NeuralRDE
 
 
-def test_nrde_prepend_zero_basepoint_preserves_output_shape() -> None:
+@pytest.mark.parametrize("signature_depth", [1, 2])
+def test_nrde_prepend_zero_basepoint_preserves_output_shape(
+    signature_depth: int,
+) -> None:
     model = NeuralRDE(
         input_path_dim=3,
         cde_state_dim=8,
@@ -22,7 +27,7 @@ def test_nrde_prepend_zero_basepoint_preserves_output_shape() -> None:
         init_hidden_dim=8,
         initial_cond_mlp_depth=2,
         vf_mlp_depth=2,
-        signature_depth=2,
+        signature_depth=signature_depth,
         signature_window_size=2,
         manifold=georax.Euclidean(),
         solver=diffrax.Tsit5(),
@@ -43,12 +48,14 @@ def test_nrde_prepend_zero_basepoint_preserves_output_shape() -> None:
         dtype=jnp.float32,
     )
 
-    outputs = model(control_values)
+    outputs = eqx.filter_jit(model)(control_values)
 
     assert outputs.shape == (5, 2)
+    assert jnp.all(jnp.isfinite(outputs))
 
 
-def test_bnrde_so3_stays_on_manifold() -> None:
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_bnrde_so3_stays_on_manifold(adaptive: bool) -> None:
     model = BNRDE(
         input_path_dim=3,
         initial_state_param_dim=6,
@@ -62,7 +69,12 @@ def test_bnrde_so3_stays_on_manifold() -> None:
         data_geometry=georax.SO(3),
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
         rough_solution=RoughSolution.STRATONOVICH,
-        solver=georax.CG2(),
+        solver=georax.CFEES25() if adaptive else georax.CG2(),
+        stepsize_controller=(
+            diffrax.PIDController(rtol=1e-3, atol=1e-3)
+            if adaptive
+            else diffrax.ConstantStepSize()
+        ),
         evolving_out=True,
         prepend_zero_basepoint=False,
         key=jr.PRNGKey(2),
@@ -98,7 +110,8 @@ def test_bnrde_rejects_non_georax_solver_for_problem_manifold() -> None:
         )
 
 
-def test_bnrde_spd_stays_on_manifold() -> None:
+@pytest.mark.parametrize("signature_depth", [1, 2])
+def test_bnrde_spd_stays_on_manifold(signature_depth: int) -> None:
     model = BNRDE(
         input_path_dim=2,
         initial_state_param_dim=6,
@@ -107,7 +120,7 @@ def test_bnrde_spd_stays_on_manifold() -> None:
         initial_cond_mlp_depth=1,
         vf_hidden_dim=8,
         vf_mlp_depth=1,
-        signature_depth=1,
+        signature_depth=signature_depth,
         signature_window_size=2,
         data_geometry=georax.SPD(3),
         hidden_state_mode=HiddenStateMode.PROBLEM_MANIFOLD,
@@ -124,6 +137,64 @@ def test_bnrde_spd_stays_on_manifold() -> None:
     assert outputs.shape == (5, 3, 3)
     assert jnp.allclose(outputs, jnp.swapaxes(outputs, -1, -2), rtol=1e-5, atol=1e-5)
     assert jnp.all(jnp.linalg.eigvalsh(outputs) > 0.0)
+
+
+@pytest.mark.parametrize("model_type", ["nrde", "bnrde"])
+@pytest.mark.parametrize("adaptive", [False, True])
+def test_rough_models_have_finite_training_gradients(
+    model_type: str,
+    adaptive: bool,
+) -> None:
+    controller = (
+        diffrax.PIDController(rtol=1e-3, atol=1e-3)
+        if adaptive
+        else diffrax.ConstantStepSize()
+    )
+    if model_type == "nrde":
+        model = NeuralRDE(
+            input_path_dim=2,
+            cde_state_dim=2,
+            output_path_dim=1,
+            vf_hidden_dim=4,
+            init_hidden_dim=4,
+            initial_cond_mlp_depth=1,
+            vf_mlp_depth=1,
+            signature_depth=2,
+            signature_window_size=2,
+            manifold=georax.Euclidean(),
+            solver=diffrax.Tsit5(),
+            stepsize_controller=controller,
+            key=jr.PRNGKey(12),
+        )
+    else:
+        model = BNRDE(
+            input_path_dim=2,
+            initial_state_param_dim=2,
+            output_path_dim=1,
+            initial_hidden_dim=4,
+            initial_cond_mlp_depth=1,
+            vf_hidden_dim=4,
+            vf_mlp_depth=1,
+            signature_depth=2,
+            signature_window_size=2,
+            data_geometry=georax.Euclidean(),
+            hidden_state_mode=HiddenStateMode.EUCLIDEAN,
+            rough_solution=RoughSolution.ITO,
+            solver=diffrax.Tsit5(),
+            stepsize_controller=controller,
+            key=jr.PRNGKey(12),
+        )
+    values = 0.1 * jr.normal(jr.PRNGKey(13), (5, 2))
+
+    loss_fn = eqx.filter_jit(
+        eqx.filter_value_and_grad(lambda m: jnp.mean(m(values) ** 2))
+    )
+    loss, grads = loss_fn(model)
+
+    assert jnp.isfinite(loss)
+    leaves = jax.tree.leaves(grads)
+    assert all(jnp.all(jnp.isfinite(leaf)) for leaf in leaves)
+    assert any(jnp.any(leaf != 0.0) for leaf in leaves)
 
 
 def test_bnrde_same_count_control_stays_aligned() -> None:

@@ -6,6 +6,13 @@ resolution-markers = [
     "sys_platform == 'darwin'",
 ]
 
+[manifest]
+overrides = [
+    { name = "diffrax-lowstorage", git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=3f72fe75660ed325bfc35086239950c73c3e98c8" },
+    { name = "georax", git = "https://github.com/luke-a-thompson/georax.git?rev=8cbae326c64eccd0a2c37d1ea7767a14cc29b8ae" },
+    { name = "pysiglib", extras = ["cuda"], specifier = ">=4.0.0" },
+]
+
 [[package]]
 name = "absl-py"
 version = "2.4.0"
@@ -150,10 +157,11 @@ dependencies = [
 [[package]]
 name = "diffrax-lowstorage"
 version = "0.1.0"
-source = { git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=dc3a519919a634701c9cbb8cb5afc5f9d102a757#dc3a519919a634701c9cbb8cb5afc5f9d102a757" }
+source = { git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=3f72fe75660ed325bfc35086239950c73c3e98c8#3f72fe75660ed325bfc35086239950c73c3e98c8" }
 dependencies = [
     { name = "diffrax" },
     { name = "jax" },
+    { name = "typing-extensions" },
 ]
 
 [[package]]
@@ -234,7 +242,7 @@ wheels = [
 [[package]]
 name = "georax"
 version = "0.1.0"
-source = { git = "https://github.com/luke-a-thompson/georax.git#6c6c80b042f952646d5337b1e565179064076a79" }
+source = { git = "https://github.com/luke-a-thompson/georax.git?rev=8cbae326c64eccd0a2c37d1ea7767a14cc29b8ae#8cbae326c64eccd0a2c37d1ea7767a14cc29b8ae" }
 dependencies = [
     { name = "diffrax" },
     { name = "diffrax-lowstorage" },
@@ -745,7 +753,7 @@ name = "nvidia-cublas-cu12"
 version = "12.9.2.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-nvrtc-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cuda-nvrtc-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/a2/c96163a0fff1839c0c9548bbdeae7b853b867009e33b9b9264adc238b1cf/nvidia_cublas_cu12-12.9.2.10-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:5572131a59c3eebeeb1c4c8144f772d49372c20124916e072a0e3fc30df421d5", size = 575012079, upload-time = "2026-04-08T18:51:47.303Z" },
@@ -802,7 +810,7 @@ name = "nvidia-cudnn-cu12"
 version = "9.23.2.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cublas-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a4/19/e70f60a82986f65111d30ffd1744ed3478a3f8cd67bcdac38bf00d57d9da/nvidia_cudnn_cu12-9.23.2.1-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:3adf706a93367d400b4e7668fc14834c7551c9122eeb22f8aec6435b18da5b6f", size = 778221490, upload-time = "2026-06-16T03:36:51.086Z" },
@@ -814,7 +822,7 @@ name = "nvidia-cufft-cu12"
 version = "11.4.1.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/9b/2b/76445b0af890da61b501fde30650a1a4bd910607261b209cccb5235d3daa/nvidia_cufft_cu12-11.4.1.4-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1a28c9b12260a1aa7a8fd12f5ebd82d027963d635ba82ff39a1acfa7c4c0fbcf", size = 200822453, upload-time = "2025-06-05T20:05:27.889Z" },
@@ -826,9 +834,9 @@ name = "nvidia-cusolver-cu12"
 version = "11.7.5.82"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cublas-cu12", marker = "sys_platform != 'darwin'" },
-    { name = "nvidia-cusparse-cu12", marker = "sys_platform != 'darwin'" },
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cublas-cu12" },
+    { name = "nvidia-cusparse-cu12" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/03/99/686ff9bf3a82a531c62b1a5c614476e8dfa24a9d89067aeedf3592ee4538/nvidia_cusolver_cu12-11.7.5.82-py3-none-manylinux_2_27_aarch64.whl", hash = "sha256:62efa83e4ace59a4c734d052bb72158e888aa7b770e1a5f601682f16fe5b4fd2", size = 337869834, upload-time = "2025-06-05T20:06:53.125Z" },
@@ -840,7 +848,7 @@ name = "nvidia-cusparse-cu12"
 version = "12.5.10.65"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-nvjitlink-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-nvjitlink-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5e/6f/8710fbd17cdd1d0fc3fea7d36d5b65ce1933611c31e1861da330206b253a/nvidia_cusparse_cu12-12.5.10.65-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:221c73e7482dd93eda44e65ce567c031c07e2f93f6fa0ecd3ba876a195023e83", size = 366359408, upload-time = "2025-06-05T20:07:42.501Z" },
@@ -870,7 +878,7 @@ name = "nvidia-nvshmem-cu12"
 version = "3.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "nvidia-cuda-cccl-cu12", marker = "sys_platform != 'darwin'" },
+    { name = "nvidia-cuda-cccl-cu12" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/29/4f/2d705ab9a090fe946dc2be0a3c30f9241e99c49058d2f9c269459b445edc/nvidia_nvshmem_cu12-3.7.0-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:06426cd421093a63529d90a95e57ddf884c9ca43f93016d7a27b903f0a0acaed", size = 230116748, upload-time = "2026-06-11T12:40:27.683Z" },
@@ -1102,7 +1110,7 @@ wheels = [
 
 [[package]]
 name = "pysiglib"
-version = "3.1.0"
+version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "kauri" },
@@ -1111,9 +1119,9 @@ dependencies = [
     { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/07/81e66fd57af890f74b72128a0419b4fd292ebe81d5e92d1c46519787cea0/pysiglib-3.1.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:1956e938d88644766bfd41a6f88eb78b307e88c9d17e1bbdc6049a49ab63fa91", size = 569282, upload-time = "2026-06-12T18:50:43.44Z" },
-    { url = "https://files.pythonhosted.org/packages/f4/31/ae19a5e7da4ec554d9a1357c92df2adc8229097ddf5a0bcdf1d34c4eb72d/pysiglib-3.1.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:f8e1c520c73c5315346ddd3186cc1c2c7b5bfcd91685424273dcab07a6c00bab", size = 920148, upload-time = "2026-06-12T18:50:45.449Z" },
-    { url = "https://files.pythonhosted.org/packages/e1/8a/c3587f994b995f66313033018f76e74977458216e67cb78c454e5769661e/pysiglib-3.1.0-py3-none-win_amd64.whl", hash = "sha256:95f5e732cc6d8b4dc4ef67e5414a7fcffbfec78f9bea7d70be884931603fa473", size = 817740, upload-time = "2026-06-12T18:50:47.072Z" },
+    { url = "https://files.pythonhosted.org/packages/64/cf/665b391d8ec963daee93193e672474a5449b972ebddfb47bc9015c0cb4a5/pysiglib-4.0.0-py3-none-macosx_11_0_arm64.whl", hash = "sha256:d04ff11ced25632263dfd67fae9afa6dffcf29ab05726b413c5ceb458e5c954c", size = 1986159, upload-time = "2026-09-27T13:46:39.955Z" },
+    { url = "https://files.pythonhosted.org/packages/bd/64/771649118bb411ca4284fd0b042e0067f24d220fe9fb33b9c20e6a8c01b7/pysiglib-4.0.0-py3-none-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:1ba47d5c58bde18bb0164267840a39b9dda319957fc3de886f8528b9576738ee", size = 2723049, upload-time = "2026-09-27T13:46:41.925Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/bb/abd4236b19df1bac12ee263711dbb9b352e155097d124409bbea25155326/pysiglib-4.0.0-py3-none-win_amd64.whl", hash = "sha256:2614ad1e7576e60f9a478d5bdb3e096ee232828fc3ff565644b3845d9bbd8d81", size = 2317002, upload-time = "2026-09-27T13:46:43.674Z" },
 ]
 
 [package.optional-dependencies]
@@ -1123,14 +1131,14 @@ cuda = [
 
 [[package]]
 name = "pysiglib-cuda"
-version = "3.1.0"
+version = "4.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pysiglib" },
+    { name = "pysiglib", extra = ["cuda"] },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/6e/08/d42bd5135302edfa59eada20bb7182cf7383aa6e11db439251508c534030/pysiglib_cuda-3.1.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:80172d1089dc44940a89fcef41bd6c9d1a4c022e06eceb2799eb9802b6a571e4", size = 49990770, upload-time = "2026-06-12T18:51:15.382Z" },
-    { url = "https://files.pythonhosted.org/packages/90/0d/1f02246eb7c5c9db68b737ba748073fbca9ca06e2f233e2cf76f26a483d6/pysiglib_cuda-3.1.0-py3-none-win_amd64.whl", hash = "sha256:b8f40f4d35856d9dc4da51e141ee452b16e60e4d1990a07e7f267d04c8b1bb1b", size = 49916868, upload-time = "2026-06-12T18:51:18.595Z" },
+    { url = "https://files.pythonhosted.org/packages/3c/91/b2133aaa5dd1e663dff9e54659261db5eb217b0e55a5a22a8170a83b7d0f/pysiglib_cuda-4.0.0-py3-none-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5bf82c1a0d3fc6ad06c870fb2626e119e4dc5a6c427e0df2ddbe2dda4b230363", size = 26807495, upload-time = "2026-09-27T13:47:15.885Z" },
+    { url = "https://files.pythonhosted.org/packages/42/a0/8d10ec56d225cae66a43f3d0d08dc6df7a450fc61d1c3759784cf2f410c5/pysiglib_cuda-4.0.0-py3-none-win_amd64.whl", hash = "sha256:8e471f96f60fc55476304bada7dafb44e9da4a8157eadeb713f6d66e5f034f1a", size = 26446136, upload-time = "2026-09-27T13:47:18.919Z" },
 ]
 
 [[package]]
@@ -1200,14 +1208,14 @@ wheels = [
 [[package]]
 name = "roughrax"
 version = "0.1.0"
-source = { git = "https://github.com/luke-a-thompson/roughrax.git#f46a947ff2cd998c3cd6980ef25db40b20f9a159" }
+source = { git = "https://github.com/luke-a-thompson/roughrax.git?rev=4a73da1c0e9d01dd3910063b8989c1a0f212d90d#4a73da1c0e9d01dd3910063b8989c1a0f212d90d" }
 dependencies = [
     { name = "diffrax" },
     { name = "equinox" },
     { name = "georax" },
     { name = "jaxtyping" },
     { name = "numpy" },
-    { name = "pysiglib" },
+    { name = "pysiglib", extra = ["cuda"] },
     { name = "torch", version = "2.12.0", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform == 'darwin'" },
     { name = "torch", version = "2.12.0+cpu", source = { registry = "https://download.pytorch.org/whl/cpu" }, marker = "sys_platform != 'darwin'" },
 ]
@@ -1359,18 +1367,18 @@ dev = [
 requires-dist = [
     { name = "cyreal", git = "https://github.com/luke-a-thompson/cyreal_dynamics.git?branch=master" },
     { name = "diffrax", git = "https://github.com/sammccallum/diffrax?rev=aeb1335b5a6278e85a270231e0f97b8db4453ae6" },
-    { name = "diffrax-lowstorage", git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=dc3a519919a634701c9cbb8cb5afc5f9d102a757" },
+    { name = "diffrax-lowstorage", git = "https://github.com/luke-a-thompson/diffrax-lowstorage.git?rev=3f72fe75660ed325bfc35086239950c73c3e98c8" },
     { name = "equinox", specifier = ">=0.13.2" },
-    { name = "georax", git = "https://github.com/luke-a-thompson/georax.git" },
-    { name = "jax", extras = ["cuda"], specifier = ">=0.8.1" },
+    { name = "georax", git = "https://github.com/luke-a-thompson/georax.git?rev=8cbae326c64eccd0a2c37d1ea7767a14cc29b8ae" },
+    { name = "jax", extras = ["cuda"], specifier = ">=0.9.1" },
     { name = "lovely-jax", specifier = ">=0.1.4" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "numpy", specifier = ">=2.0.0" },
     { name = "optax", specifier = ">=0.2.6" },
     { name = "optuna", specifier = ">=4.6.0" },
     { name = "pydantic", specifier = ">=2.12.3" },
-    { name = "pysiglib", extras = ["cuda"], specifier = ">=3.1.0" },
-    { name = "roughrax", git = "https://github.com/luke-a-thompson/roughrax.git" },
+    { name = "pysiglib", extras = ["cuda"], specifier = ">=4.0.0" },
+    { name = "roughrax", git = "https://github.com/luke-a-thompson/roughrax.git?rev=4a73da1c0e9d01dd3910063b8989c1a0f212d90d" },
     { name = "scipy", specifier = ">=1.16.0" },
     { name = "tqdm", specifier = ">=4.67.1" },
 ]
@@ -1386,13 +1394,13 @@ resolution-markers = [
     "sys_platform == 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "sys_platform == 'darwin'" },
-    { name = "fsspec", marker = "sys_platform == 'darwin'" },
-    { name = "jinja2", marker = "sys_platform == 'darwin'" },
-    { name = "networkx", marker = "sys_platform == 'darwin'" },
-    { name = "setuptools", marker = "sys_platform == 'darwin'" },
-    { name = "sympy", marker = "sys_platform == 'darwin'" },
-    { name = "typing-extensions", marker = "sys_platform == 'darwin'" },
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "jinja2" },
+    { name = "networkx" },
+    { name = "setuptools" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.12.0-cp313-cp313-macosx_14_0_arm64.whl", hash = "sha256:90dd587a5f61bfe1307148b581e2084fc5bc4a06e2b90a20e9a36b81087ff16b", upload-time = "2026-05-12T16:20:17Z" },
@@ -1409,13 +1417,13 @@ resolution-markers = [
     "sys_platform != 'darwin'",
 ]
 dependencies = [
-    { name = "filelock", marker = "sys_platform != 'darwin'" },
-    { name = "fsspec", marker = "sys_platform != 'darwin'" },
-    { name = "jinja2", marker = "sys_platform != 'darwin'" },
-    { name = "networkx", marker = "sys_platform != 'darwin'" },
-    { name = "setuptools", marker = "sys_platform != 'darwin'" },
-    { name = "sympy", marker = "sys_platform != 'darwin'" },
-    { name = "typing-extensions", marker = "sys_platform != 'darwin'" },
+    { name = "filelock" },
+    { name = "fsspec" },
+    { name = "jinja2" },
+    { name = "networkx" },
+    { name = "setuptools" },
+    { name = "sympy" },
+    { name = "typing-extensions" },
 ]
 wheels = [
     { url = "https://download-r2.pytorch.org/whl/cpu/torch-2.12.0%2Bcpu-cp313-cp313-linux_s390x.whl", hash = "sha256:5e0da19e1c3bfdc9b92638c552579eac678354485d61fc8921b0461fd6c40449", upload-time = "2026-05-12T23:17:05Z" },

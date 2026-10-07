@@ -125,7 +125,8 @@ class ManifoldNeuralODE(eqx.Module):
         self.dt0 = dt0
 
     def _chart_map(self, anchor: jax.Array, u: jax.Array) -> jax.Array:
-        return self.manifold.apply_increment(anchor, u)
+        chart = self.manifold.select_chart(required_order=2)
+        return self.manifold.apply_increment(anchor, u, chart)
 
     def _solve_segment(
         self,

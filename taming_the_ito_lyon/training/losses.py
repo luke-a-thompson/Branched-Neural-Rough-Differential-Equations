@@ -261,7 +261,7 @@ def branched_signature_kernel_score(
                     [jnp.zeros((B, 1, sig_dim, sig_dim), dtype=x.dtype), corr],
                     axis=1,
                 )
-            return corr.reshape((B, int(corr.shape[1]), sig_dim * sig_dim))
+            return -0.5 * corr.reshape((B, int(corr.shape[1]), sig_dim * sig_dim))
 
         phi_pred = branched_sig(
             _path(pred_x_btc),

@@ -10,13 +10,17 @@ import jax
 import jax.nn as jnn
 import jax.numpy as jnp
 import jax.random as jr
-from taming_the_ito_lyon.utils.roughrax_compat import roughrax
+import roughrax
 
 from taming_the_ito_lyon.config.config_options import HiddenStateMode, RoughSolution
 from taming_the_ito_lyon.utils.geometry import project_to_manifold, spd_unvech
 
 from .extrapolation import ExtrapolationScheme
-from .rough_utils import compute_disjoint_signature_times, ito_correction
+from .rough_utils import (
+    compute_disjoint_signature_times,
+    ito_correction,
+    signature_stepsize_controller,
+)
 
 
 def lipswish(x: jax.Array) -> jax.Array:
@@ -300,7 +304,7 @@ class BNRDE(eqx.Module):
             if self.rough_solution == "ito"
             else None
         )
-        control = roughrax.SignatureInterpolation(
+        control = roughrax.LogSignatureInterpolation(
             driver,
             signature_ts,
             depth=int(self.signature_depth),
@@ -312,12 +316,8 @@ class BNRDE(eqx.Module):
             return self.vector_field(y)
 
         term = roughrax.RoughTerm(vector_field, control, self.geometry)
-        stepsize_controller = (
-            diffrax.StepTo(signature_ts)
-            if isinstance(self.stepsize_controller, diffrax.ConstantStepSize)
-            else diffrax.ClipStepSizeController(
-                self.stepsize_controller, step_ts=signature_ts
-            )
+        stepsize_controller = signature_stepsize_controller(
+            self.stepsize_controller, signature_ts, self.solver
         )
 
         solution = diffrax.diffeqsolve(

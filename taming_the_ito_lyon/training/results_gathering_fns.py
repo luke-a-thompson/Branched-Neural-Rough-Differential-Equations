@@ -377,7 +377,7 @@ def _make_branched_ito_signature_moment_gap_metrics(
             increments = path[1:, :] - path[:-1, :]
             dy = increments[:, 1]
             correction = jnp.zeros((T - 1, 2, 2), dtype=path.dtype)
-            correction = correction.at[:, 1, 1].set(dy**2)
+            correction = correction.at[:, 1, 1].set(-0.5 * dy**2)
             sig = branched_sig(
                 path,
                 int(depth),

@@ -1,3 +1,6 @@
+from dataclasses import replace
+
+import diffrax
 import jax
 import jax.numpy as jnp
 
@@ -17,6 +20,21 @@ def compute_disjoint_signature_times(
     return ts[::step]
 
 
+def signature_stepsize_controller(
+    controller: diffrax.AbstractStepSizeController,
+    signature_knots: jax.Array,
+    inner_solver: diffrax.AbstractSolver,
+) -> diffrax.AbstractStepSizeController:
+    """Clip LogODE steps at knots and configure its inner ODE error estimate."""
+    if isinstance(controller, diffrax.ConstantStepSize):
+        return diffrax.StepTo(signature_knots)
+    if isinstance(controller, diffrax.PIDController) and controller.error_order is None:
+        # LogODE forwards inner step errors but does not expose their order.
+        ode = diffrax.ODETerm(lambda t, y, args: y)
+        controller = replace(controller, error_order=inner_solver.error_order(ode))
+    return diffrax.ClipStepSizeController(controller, step_ts=signature_knots)
+
+
 def ito_correction(
     ts: jax.Array,
     control_values: jax.Array,
@@ -25,7 +43,7 @@ def ito_correction(
     *,
     has_time_channel: bool,
 ) -> jax.Array:
-    """Build per-segment Brownian corrections for roughrax/PySigLib."""
+    """Build minus-half per-segment Brownian covariance for PySigLib's Itô lift."""
     num_windows = int(signature_knots.shape[0]) - 1
     stride = (int(control_values.shape[0]) - 1) // num_windows
     dim = int(control_values.shape[-1])
@@ -44,5 +62,5 @@ def ito_correction(
             dt = jnp.diff(ts) * active
             channels = jnp.arange(dim)
         diagonal = channels * dim + channels
-        correction = correction.at[:, diagonal].set(dt[:, None])
+        correction = correction.at[:, diagonal].set(-0.5 * dt[:, None])
     return correction.reshape(num_windows, stride, correction_dim)
